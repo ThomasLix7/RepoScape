@@ -184,13 +184,6 @@ async function main(): Promise<void> {
   const { HUDWebSocketServer } = await import('./websocket.js');
   const { FileWatcher } = await import('./watcher.js');
 
-  // Check for --bootstrap flag (§8)
-  if (process.argv.includes('--bootstrap') || process.argv.includes('install-skills')) {
-    const { bootstrapSkills } = await import('./bootstrap.js');
-    await bootstrapSkills(projectRoot);
-    process.exit(0);
-  }
-
   // §4.C: Unlink stale token before project size guard
   await unlinkStaleToken(projectRoot);
 
