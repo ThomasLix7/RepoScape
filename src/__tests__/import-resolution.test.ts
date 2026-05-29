@@ -42,6 +42,13 @@ describe('Import Resolution', () => {
       `export function dirFoo() { return 4; }\n`
     );
 
+    // src/dirOnly/ — only a directory with index.ts, no sibling file
+    await fs.mkdir(path.join(projectRoot, 'src', 'dirOnly'), { recursive: true });
+    await fs.writeFile(
+      path.join(projectRoot, 'src', 'dirOnly', 'index.ts'),
+      `export function dirOnlyFn() {}\n`
+    );
+
     // src/setup.ts
     await fs.writeFile(
       path.join(projectRoot, 'src', 'setup.ts'),
@@ -133,6 +140,23 @@ describe('Import Resolution', () => {
       expect(result).toBe('src/setup.ts');
     });
 
+    it('3a. Directory specifier resolves to <dir>/index.ts when no sibling file exists', async () => {
+      const resolver = new ModuleResolver(projectRoot);
+      await resolver.init();
+      resolver.setSupportedExtensions(['.ts', '.tsx', '.js', '.jsx']);
+      const result = await resolver.resolve('src/caller.ts', './dirOnly');
+      expect(result).toBe('src/dirOnly/index.ts');
+    });
+
+    it('3b. Sibling file wins over directory index (src/a.ts vs src/a/index.ts)', async () => {
+      const resolver = new ModuleResolver(projectRoot);
+      await resolver.init();
+      resolver.setSupportedExtensions(['.ts', '.tsx', '.js', '.jsx']);
+      // src/a.ts exists; src/a/index.ts also exists. File must win.
+      const result = await resolver.resolve('src/caller.ts', './a');
+      expect(result).toBe('src/a.ts');
+    });
+
     it('4. Bare specifier import express from express produces null', async () => {
       const resolver = new ModuleResolver(projectRoot);
       await resolver.init();
@@ -171,12 +195,8 @@ describe('Import Resolution', () => {
       await resolver.init();
       resolver.setSupportedExtensions(['.ts', '.tsx', '.js', '.jsx']);
       const result = await resolver.resolve('src/caller.ts', '../../external/foo');
-      // This may or may not resolve depending on the directory structure
-      // If it escapes the root, it should return null
-      if (result) {
-        // If it resolved, it should be within the project
-        expect(result.startsWith('..')).toBe(false);
-      }
+      // §2.C step 5: Sandbox check — must return null for paths escaping root
+      expect(result).toBeNull();
     });
 
     it('12. Multi-target alias — @/foo resolves to src/foo.ts if it exists, otherwise lib/foo.ts', async () => {
