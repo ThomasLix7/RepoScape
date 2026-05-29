@@ -3,9 +3,14 @@ import { connectHUD, GraphNode, GraphEdge, GraphDiff, HUDConnection } from '../c
 import { CanvasRenderer } from './CanvasRenderer.js';
 import { Sidebar } from './Sidebar.js';
 
+// Captured once at module load — BEFORE connectHUD() strips the token from the
+// URL (§11). React.StrictMode re-runs the connect effect in dev (setup → cleanup
+// → setup); re-reading window.location on the second pass would find no token and
+// wrongly report no_token, leaving the graph blank. Caching here survives that.
+const INITIAL_TOKEN = new URLSearchParams(window.location.search).get('token') || '';
+
 function getToken(): string {
-  const params = new URLSearchParams(window.location.search);
-  return params.get('token') || '';
+  return INITIAL_TOKEN;
 }
 
 export function App() {
