@@ -86,3 +86,7 @@ out/
 
 # RepoScape directories
 .reposcape/
+
+# Agent directories
+.agent/
+.agents/
