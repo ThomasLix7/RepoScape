@@ -14,7 +14,22 @@ interface SidebarProps {
   onTogglePhysical: () => void;
   onToggleCognitive: () => void;
   onToggleSuspicious: () => void;
+  // F2: Search
+  searchQuery: string;
+  searchResults: GraphNode[];
+  onSearchChange: (q: string) => void;
+  onSearchSelect: (nodeId: string) => void;
+  // F3: Filter
+  availableCommunities: number[];
+  activeFileTypes: Set<string>;
+  activeCommunities: Set<number> | null;
+  pathPrefix: string;
+  onToggleFileType: (ft: string) => void;
+  onSetCommunities: (c: Set<number> | null) => void;
+  onSetPathPrefix: (p: string) => void;
 }
+
+const FILE_TYPES = ['code', 'document', 'concept'];
 
 export function Sidebar({
   status,
@@ -29,6 +44,17 @@ export function Sidebar({
   onTogglePhysical,
   onToggleCognitive,
   onToggleSuspicious,
+  searchQuery,
+  searchResults,
+  onSearchChange,
+  onSearchSelect,
+  availableCommunities,
+  activeFileTypes,
+  activeCommunities,
+  pathPrefix,
+  onToggleFileType,
+  onSetCommunities,
+  onSetPathPrefix,
 }: SidebarProps) {
   const statusColors: Record<string, string> = {
     connected: '#50fa7b',
@@ -72,6 +98,58 @@ export function Sidebar({
         </div>
       </div>
 
+      {/* F2: Search input */}
+      <div style={{ borderTop: '1px solid #30363d', paddingTop: 12 }}>
+        <input
+          type="text"
+          placeholder="Search nodes…"
+          value={searchQuery}
+          onChange={e => onSearchChange(e.target.value)}
+          style={{
+            width: '100%',
+            background: '#0d1117',
+            border: '1px solid #30363d',
+            borderRadius: 4,
+            padding: '6px 8px',
+            color: '#c9d1d9',
+            fontSize: 12,
+            fontFamily: 'monospace',
+            outline: 'none',
+            boxSizing: 'border-box',
+          }}
+        />
+        {searchResults.length > 0 && (
+          <ul style={{
+            listStyle: 'none',
+            margin: '4px 0 0',
+            padding: 0,
+            maxHeight: 160,
+            overflowY: 'auto',
+          }}>
+            {searchResults.slice(0, 8).map(node => (
+              <li
+                key={node.id}
+                onClick={() => onSearchSelect(node.id)}
+                style={{
+                  padding: '4px 6px',
+                  cursor: 'pointer',
+                  color: '#c9d1d9',
+                  fontSize: 11,
+                  borderBottom: '1px solid #21262d',
+                  display: 'flex',
+                  flexDirection: 'column',
+                }}
+                onMouseEnter={e => (e.currentTarget.style.background = '#21262d')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+              >
+                <span>{node.label}</span>
+                <span style={{ color: '#8b949e', fontSize: 10 }}>{node.source_file}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
       <div style={{ borderTop: '1px solid #30363d', paddingTop: 12 }}>
         <div style={{ color: '#8b949e', fontSize: 11, marginBottom: 8 }}>GRAPH STATS</div>
         <div style={{ color: '#c9d1d9', fontSize: 12 }}>Nodes: {nodeCount}</div>
@@ -97,6 +175,99 @@ export function Sidebar({
         </label>
       </div>
 
+      {/* F3: Node Filter panel */}
+      <div style={{ borderTop: '1px solid #30363d', paddingTop: 12 }}>
+        <div style={{ color: '#8b949e', fontSize: 11, marginBottom: 8 }}>NODE FILTER</div>
+
+        {/* File type toggles */}
+        <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+          {FILE_TYPES.map(ft => (
+            <label key={ft} style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={activeFileTypes.has(ft)}
+                onChange={() => onToggleFileType(ft)}
+              />
+              <span style={{ color: '#c9d1d9', fontSize: 11 }}>{ft}</span>
+            </label>
+          ))}
+        </div>
+
+        {/* Community selector */}
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ color: '#8b949e', fontSize: 10, marginBottom: 4 }}>Community</div>
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            <span
+              onClick={() => onSetCommunities(null)}
+              style={{
+                padding: '2px 6px',
+                fontSize: 10,
+                borderRadius: 3,
+                cursor: 'pointer',
+                background: activeCommunities === null ? '#30363d' : 'transparent',
+                color: activeCommunities === null ? '#f0f6fc' : '#8b949e',
+                border: '1px solid #30363d',
+              }}
+            >
+              All
+            </span>
+            {availableCommunities.map(c => (
+              <span
+                key={c}
+                onClick={() => {
+                  if (activeCommunities === null) {
+                    onSetCommunities(new Set([c]));
+                  } else {
+                    const next = new Set(activeCommunities);
+                    if (next.has(c)) {
+                      next.delete(c);
+                      if (next.size === 0) { onSetCommunities(null); return; }
+                    } else {
+                      next.add(c);
+                    }
+                    onSetCommunities(next);
+                  }
+                }}
+                style={{
+                  padding: '2px 6px',
+                  fontSize: 10,
+                  borderRadius: 3,
+                  cursor: 'pointer',
+                  background: activeCommunities?.has(c) ? '#30363d' : 'transparent',
+                  color: activeCommunities?.has(c) ? '#f0f6fc' : '#8b949e',
+                  border: '1px solid #30363d',
+                }}
+              >
+                {c}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        {/* Path prefix filter */}
+        <div>
+          <div style={{ color: '#8b949e', fontSize: 10, marginBottom: 4 }}>Path</div>
+          <input
+            type="text"
+            placeholder="src/server/"
+            value={pathPrefix}
+            onChange={e => onSetPathPrefix(e.target.value)}
+            style={{
+              width: '100%',
+              background: '#0d1117',
+              border: '1px solid #30363d',
+              borderRadius: 3,
+              padding: '4px 6px',
+              color: '#c9d1d9',
+              fontSize: 11,
+              fontFamily: 'monospace',
+              outline: 'none',
+              boxSizing: 'border-box',
+            }}
+          />
+        </div>
+      </div>
+
       {selectedNode && (
         <div style={{ borderTop: '1px solid #30363d', paddingTop: 12 }}>
           <div style={{ color: '#8b949e', fontSize: 11, marginBottom: 8 }}>SELECTED NODE</div>
@@ -117,7 +288,6 @@ export function Sidebar({
         </div>
       )}
 
-      {/* §4: COGNITIVE Edge Audit Trail */}
       {selectedEdge && selectedEdge.type === 'COGNITIVE' && (
         <div style={{ borderTop: '1px solid #30363d', paddingTop: 12 }}>
           <div style={{ color: '#8b949e', fontSize: 11, marginBottom: 8 }}>COGNITIVE EDGE AUDIT</div>

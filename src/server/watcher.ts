@@ -10,6 +10,7 @@ export class FileWatcher {
   private watchRoot: string;
   private compiler: GraphCompiler;
   private onGraphUpdate: (diff: GraphDiff) => void;
+  private onFocus?: (changedFiles: string[]) => void;
   private debounceTimer: NodeJS.Timeout | null = null;
   private pendingChanges: Set<string> = new Set();
   private pendingDeletes: Set<string> = new Set();
@@ -18,12 +19,14 @@ export class FileWatcher {
     projectRoot: string,
     compiler: GraphCompiler,
     onGraphUpdate: (diff: GraphDiff) => void,
-    watchRoot?: string
+    watchRoot?: string,
+    onFocus?: (changedFiles: string[]) => void
   ) {
     this.projectRoot = projectRoot;
     this.compiler = compiler;
     this.onGraphUpdate = onGraphUpdate;
     this.watchRoot = watchRoot || projectRoot;
+    this.onFocus = onFocus;
   }
 
   start(): void {
@@ -89,6 +92,13 @@ export class FileWatcher {
         ...diff,
         hubNodes,
       });
+
+      // Highlight the nodes for files that were just edited (not deletes —
+      // their nodes are gone). source_file uses the same project-relative,
+      // forward-slashed form as `changes`, so these match directly.
+      if (this.onFocus && changes.size > 0) {
+        this.onFocus(Array.from(changes));
+      }
     } catch (err: any) {
       await appendErrorLog(this.projectRoot, `Error during incremental compile: ${err.message}`);
     }

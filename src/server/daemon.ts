@@ -269,7 +269,12 @@ async function main(): Promise<void> {
 
   const watcher = new FileWatcher(projectRoot, compiler, (diff) => {
     wsServer.broadcastDiff(diff);
-  }, guardResult.scopeRoot || undefined);
+  }, guardResult.scopeRoot || undefined, (changedFiles) => {
+    // Light up edited files' nodes (§2C focus glow, 60s TTL on the client).
+    for (const file of changedFiles) {
+      wsServer.broadcastFocus({ file, activity: 'edited' });
+    }
+  });
   watcher.start();
 
   server.listen(port, '127.0.0.1', () => {

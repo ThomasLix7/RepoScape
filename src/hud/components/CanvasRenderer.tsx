@@ -66,6 +66,25 @@ export class CanvasRenderer {
   private simulationTimer: ReturnType<typeof setInterval> | null = null;
   private d3Module: any = null;
 
+  // F1: Node drag + pin state
+  private draggedNode: D3Node | null = null;
+  private pinnedNodes = new Set<string>();
+  private didDrag = false;
+  private suppressNextClick = false;
+
+  // F2: Search highlight
+  private highlightedNodes = new Set<string>();
+
+  // F4: Frame-skip state
+  private lastFrameHash = '';
+  private frameSkipCount = 0;
+  private lastNodes: GraphNode[] | null = null;
+  private lastEdges: GraphEdge[] | null = null;
+
+  // F5: Label texture cache
+  private labelCache = new Map<string, { img: HTMLCanvasElement; w: number; h: number }>();
+  private static readonly LABEL_FONT_PX = 13;
+
   // §5.5 Camera Spring: F = -k·Δx − c·v, then v += F, x += v
   private readonly STIFFNESS = 0.08;
   private readonly DAMPING = 2 * Math.sqrt(0.08); // ≈0.566
@@ -77,6 +96,15 @@ export class CanvasRenderer {
     this.bindEvents();
     window.addEventListener('resize', () => this.resize());
     this.initD3Force();
+  }
+
+  // F0: Remove nodes from renderer state on diff removal
+  removeNodes(ids: string[]): void {
+    for (const id of ids) {
+      this.nodePositions.delete(id);
+      this.nodeSizes.delete(id);
+      this.pinnedNodes.delete(id);
+    }
   }
 
   // §6.A: Initialize d3-force with dedicated simulation loop
@@ -150,11 +178,15 @@ export class CanvasRenderer {
       const anchor = anchors.get(community) ?? { x: 0, y: 0 };
       const r = 14 * Math.sqrt(i + 1);
       const a = i * GOLDEN;
+      // F1: Re-apply pinned fx/fy on rebuild so diffs don't unpin nodes
+      const pinned = this.pinnedNodes.has(n.id) ? this.nodePositions.get(n.id) : null;
       return {
         id: n.id,
         community,
         x: existing?.x ?? anchor.x + r * Math.cos(a),
         y: existing?.y ?? anchor.y + r * Math.sin(a),
+        fx: pinned?.x ?? null,
+        fy: pinned?.y ?? null,
       };
     });
 
@@ -251,6 +283,49 @@ export class CanvasRenderer {
     }
   }
 
+  // F2: Camera spring fly-to a specific node
+  flyToNode(nodeId: string): void {
+    const pos = this.nodePositions.get(nodeId);
+    if (!pos) return;
+    this.camera.targetX = pos.x;
+    this.camera.targetY = pos.y;
+    this.camera.targetZoom = Math.max(this.camera.targetZoom, 1.2);
+    this.userInteracted = true;
+  }
+
+  // F2: Set highlighted node IDs for search results
+  setHighlightedNodes(ids: Set<string>): void {
+    this.highlightedNodes = ids;
+  }
+
+  // F5: Pre-render label to offscreen canvas, cache by text
+  private getLabelImage(text: string): { img: HTMLCanvasElement; w: number; h: number } {
+    const cached = this.labelCache.get(text);
+    if (cached) return cached;
+
+    const dpr = window.devicePixelRatio || 1;
+    const fontPx = CanvasRenderer.LABEL_FONT_PX;
+    const font = `${fontPx}px monospace`;
+
+    const scratch = document.createElement('canvas');
+    const sctx = scratch.getContext('2d')!;
+    sctx.font = font;
+    const metrics = sctx.measureText(text);
+    const w = Math.ceil(metrics.width) + 2;
+    const h = Math.ceil(fontPx * 1.4) + 2;
+    scratch.width = Math.ceil(w * dpr);
+    scratch.height = Math.ceil(h * dpr);
+    sctx.scale(dpr, dpr);
+    sctx.font = font;
+    sctx.fillStyle = '#c9d1d9';
+    sctx.textBaseline = 'top';
+    sctx.fillText(text, 1, 1);
+
+    const entry = { img: scratch, w, h };
+    this.labelCache.set(text, entry);
+    return entry;
+  }
+
   private resize(): void {
     const dpr = window.devicePixelRatio || 1;
     const rect = this.canvas.getBoundingClientRect();
@@ -260,17 +335,39 @@ export class CanvasRenderer {
   }
 
   private bindEvents(): void {
+    // F1: mousedown — check node hit first for drag, else canvas pan
     this.canvas.addEventListener('mousedown', (e) => {
-      this.isDragging = true;
-      this.lastMouse = { x: e.clientX, y: e.clientY };
-      this.canvas.style.cursor = 'grabbing';
+      const hit = this.findNodeAt(e.clientX, e.clientY);
+      if (hit) {
+        const d3n = this.d3Nodes.find(n => n.id === hit.id);
+        if (d3n) {
+          this.draggedNode = d3n;
+          this.didDrag = false;
+          d3n.fx = d3n.x;
+          d3n.fy = d3n.y;
+          this.d3Simulation?.alpha(0.3).restart();
+        }
+      } else {
+        this.isDragging = true;
+        this.lastMouse = { x: e.clientX, y: e.clientY };
+        this.canvas.style.cursor = 'grabbing';
+      }
     });
 
+    // F1: mousemove — node drag takes priority over canvas pan
     window.addEventListener('mousemove', (e) => {
-      if (this.isDragging) {
+      if (this.draggedNode) {
+        const rect = this.canvas.getBoundingClientRect();
+        const wx = (e.clientX - rect.left - rect.width / 2) / this.camera.zoom + this.camera.x;
+        const wy = (e.clientY - rect.top - rect.height / 2) / this.camera.zoom + this.camera.y;
+        this.draggedNode.fx = wx;
+        this.draggedNode.fy = wy;
+        this.nodePositions.set(this.draggedNode.id, { x: wx, y: wy });
+        this.didDrag = true;
+      } else if (this.isDragging) {
         const dx = e.clientX - this.lastMouse.x;
         const dy = e.clientY - this.lastMouse.y;
-        if (dx !== 0 || dy !== 0) this.userInteracted = true; // stop auto-fit once panned
+        if (dx !== 0 || dy !== 0) this.userInteracted = true;
         this.camera.targetX -= dx / this.camera.zoom;
         this.camera.targetY -= dy / this.camera.zoom;
         this.lastMouse = { x: e.clientX, y: e.clientY };
@@ -280,29 +377,50 @@ export class CanvasRenderer {
       }
     });
 
+    // F1: mouseup — finalize node drag (pin) or canvas pan
     window.addEventListener('mouseup', () => {
+      if (this.draggedNode) {
+        if (this.didDrag) {
+          this.pinnedNodes.add(this.draggedNode.id);
+          this.suppressNextClick = true;
+        }
+        this.draggedNode = null;
+        this.didDrag = false;
+      }
       this.isDragging = false;
       this.canvas.style.cursor = 'grab';
     });
 
-    this.canvas.addEventListener('wheel', (e) => {
-      e.preventDefault();
-      this.userInteracted = true; // stop auto-fit once the user zooms
-      const factor = e.deltaY > 0 ? 0.9 : 1.1;
-      this.camera.targetZoom = Math.max(0.1, Math.min(5, this.camera.targetZoom * factor));
-      // §6.A: Camera zoom/pan must NOT wake simulation
+    // F1: dblclick — unpin node
+    this.canvas.addEventListener('dblclick', (e) => {
+      const hit = this.findNodeAt(e.clientX, e.clientY);
+      if (hit && this.pinnedNodes.has(hit.id)) {
+        this.pinnedNodes.delete(hit.id);
+        const d3n = this.d3Nodes.find(n => n.id === hit.id);
+        if (d3n) {
+          d3n.fx = null;
+          d3n.fy = null;
+        }
+        this.d3Simulation?.alpha(0.3).restart();
+      }
     });
 
+    this.canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      this.userInteracted = true;
+      const factor = e.deltaY > 0 ? 0.9 : 1.1;
+      this.camera.targetZoom = Math.max(0.1, Math.min(5, this.camera.targetZoom * factor));
+    });
+
+    // F1: click — suppress after drag
     this.canvas.addEventListener('click', (e) => {
+      if (this.suppressNextClick) { this.suppressNextClick = false; return; }
       const node = this.findNodeAt(e.clientX, e.clientY);
       if (node) {
-        // Drive focus mode: clicking a node isolates its neighborhood.
         this.selectedNodeId = node.id;
         if (this.onNodeClick) this.onNodeClick(node);
       } else {
-        // Clicking empty space clears the focus.
         this.selectedNodeId = null;
-        // §6.D: Check for edge click — honors all edge type visibility filters
         const edge = this.findEdgeAt(e.clientX, e.clientY);
         if (this.onEdgeClick) this.onEdgeClick(edge);
       }
@@ -317,7 +435,6 @@ export class CanvasRenderer {
     for (const [id, pos] of this.nodePositions.entries()) {
       const dx = x - pos.x;
       const dy = y - pos.y;
-      // Hit radius tracks the rendered size (plus a small grab margin).
       const size = (this.nodeSizes.get(id) ?? 6) + 3;
       if (dx * dx + dy * dy < size * size) {
         return { id, label: id, file_type: 'code', source_file: '' } as GraphNode;
@@ -328,7 +445,6 @@ export class CanvasRenderer {
 
   // §6.D: findEdgeAt iterates over ALL edge types, respecting visibility filters
   private findEdgeAt(clientX: number, clientY: number): GraphEdge | null {
-    // §5.4: Edges are not rendered below zoom 0.3
     if (this.camera.zoom < 0.3) return null;
 
     const rect = this.canvas.getBoundingClientRect();
@@ -336,10 +452,9 @@ export class CanvasRenderer {
     const y = (clientY - rect.top - rect.height / 2) / this.camera.zoom + this.camera.y;
 
     let closestEdge: GraphEdge | null = null;
-    let closestDist = 12; // Max click distance in world coords
+    let closestDist = 12;
 
     for (const edge of this.currentEdges) {
-      // §6.D: Per-type gate against currentOptions.show*
       if (edge.type === 'PHYSICAL' && !this.currentOptions.showPhysical) continue;
       if (edge.type === 'COGNITIVE' && !this.currentOptions.showCognitive) continue;
       if (edge.type === 'SUSPICIOUS' && !this.currentOptions.showSuspicious) continue;
@@ -348,7 +463,6 @@ export class CanvasRenderer {
       const targetPos = this.nodePositions.get(edge.target);
       if (!sourcePos || !targetPos) continue;
 
-      // Distance from point to edge midpoint
       const midX = (sourcePos.x + targetPos.x) / 2;
       const midY = (sourcePos.y + targetPos.y) / 2;
       const dx = x - midX;
@@ -365,7 +479,6 @@ export class CanvasRenderer {
   }
 
   // §5.5 Spring damping: F = -k·Δx − c·v; v += F; x += v
-  // §6.B: Accept dtMs and scale forces by dtMs/16.67
   private updateCamera(dtMs: number = 16.67): void {
     const dt = dtMs / 16.67;
     const forceX = (-this.STIFFNESS * (this.camera.x - this.camera.targetX) - this.DAMPING * this.camera.vx) * dt;
@@ -378,11 +491,16 @@ export class CanvasRenderer {
     this.camera.x += this.camera.vx;
     this.camera.y += this.camera.vy;
     this.camera.zoom += forceZoom;
+
+    // F4: Camera convergence snap — avoid infinite micro-oscillation
+    if (Math.abs(this.camera.vx) < 0.01 && Math.abs(this.camera.vy) < 0.01) {
+      this.camera.x = this.camera.targetX;
+      this.camera.y = this.camera.targetY;
+      this.camera.vx = 0;
+      this.camera.vy = 0;
+    }
   }
 
-  // Frame the entire graph in the viewport by setting camera spring targets.
-  // Runs every frame until the user pans/zooms, so it tracks the layout as the
-  // simulation expands and lands on a good initial view.
   private fitToView(w: number, h: number): void {
     if (this.nodePositions.size === 0) return;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -401,7 +519,6 @@ export class CanvasRenderer {
     this.camera.targetY = (minY + maxY) / 2;
   }
 
-  // §6.A: Fallback layout for when d3-force is not available
   private layoutNodesFallback(nodes: GraphNode[]): void {
     for (const node of nodes) {
       if (!this.nodePositions.has(node.id)) {
@@ -424,7 +541,6 @@ export class CanvasRenderer {
     return Math.abs(hash);
   }
 
-  // §5.4 Frustum Bounding Check
   private isVisible(x: number, y: number, size: number, width: number, height: number): boolean {
     const cx = width / 2;
     const cy = height / 2;
@@ -445,25 +561,41 @@ export class CanvasRenderer {
     const hubNodes = options.hubNodes || new Set<string>();
 
     this.currentEdges = edges;
-    // §6.D: Persist latest options for interaction filtering
     this.currentOptions = options;
 
-    // Refresh degree-sizes + adjacency (cheap no-op when unchanged).
     this.recomputeTopology(nodes, edges, hubNodes);
 
-    // §6.B: dtMs from performance.now()
     const dtMs = options.dtMs ?? 16.67;
     this.updateCamera(dtMs);
 
-    // §6.A: Use d3-force once the module is loaded, otherwise fall back to hash
-    // positions. Gate on d3Module (not d3Simulation) so the very first build
-    // actually happens — rebuildSimulation is what *creates* the simulation, so
-    // gating it on d3Simulation being non-null was a deadlock that left us on
-    // the static fallback forever.
+    // F4: Frame-skip fingerprint — must be AFTER updateCamera so camera.x reflects
+    // the current frame's spring progress, preventing fly-to from being skipped.
+    const dataChanged = nodes !== this.lastNodes || edges !== this.lastEdges;
+    this.lastNodes = nodes;
+    this.lastEdges = edges;
+
+    if (!dataChanged && this.highlightedNodes.size === 0) {
+      const fingerprint = [
+        this.camera.x.toFixed(1), this.camera.y.toFixed(1),
+        this.camera.zoom.toFixed(3),
+        nodes.length,
+        this.hoveredNode?.id ?? '',
+        this.selectedNodeId ?? '',
+        this.d3Simulation?.alpha().toFixed(3) ?? '0',
+        this.draggedNode ? `${this.draggedNode.fx?.toFixed(1)},${this.draggedNode.fy?.toFixed(1)}` : '',
+      ].join('|');
+
+      if (fingerprint === this.lastFrameHash) {
+        this.frameSkipCount++;
+        return;
+      }
+      this.lastFrameHash = fingerprint;
+      this.frameSkipCount = 0;
+    }
+
     if (this.d3Module) {
       const currentIds = new Set(nodes.map((n) => n.id));
       const d3Ids = new Set(this.d3Nodes.map((n) => n.id));
-      // No simulation yet, or the node set changed → (re)build it.
       let needsRebuild = !this.d3Simulation || currentIds.size !== d3Ids.size;
       if (!needsRebuild) {
         for (const id of currentIds) {
@@ -476,12 +608,10 @@ export class CanvasRenderer {
       if (needsRebuild) {
         this.rebuildSimulation(nodes, edges, hubNodes);
       }
-      // Positions are updated by the simulation timer
     } else {
       this.layoutNodesFallback(nodes);
     }
 
-    // Keep the whole graph framed until the user takes over the camera.
     if (!this.userInteracted) this.fitToView(w, h);
 
     ctx.fillStyle = '#0d1117';
@@ -496,12 +626,8 @@ export class CanvasRenderer {
     ctx.scale(zoom, zoom);
     ctx.translate(-this.camera.x, -this.camera.y);
 
-    // Focus mode: when a node is hovered/selected, its incident edges stay bright
-    // and everything else fades back. Without a focus, edges render at a calm
-    // baseline opacity (no glow) so 150+ lines don't scream over the nodes.
     const activeId = this.activeNodeId();
 
-    // §5.4 LOD: Only render edges when zoom >= 0.3
     if (zoom >= 0.3) {
       for (const edge of edges) {
         if (edge.type === 'PHYSICAL' && !options.showPhysical) continue;
@@ -513,14 +639,12 @@ export class CanvasRenderer {
         if (!sourcePos || !targetPos) continue;
 
         const incident = activeId != null && (edge.source === activeId || edge.target === activeId);
-        // Alpha multiplier: 1 when no focus, bright if incident, dim otherwise.
         const a = activeId == null ? 1 : incident ? 1 : 0.08;
 
         ctx.beginPath();
         ctx.moveTo(sourcePos.x, sourcePos.y);
         ctx.lineTo(targetPos.x, targetPos.y);
 
-        // Calm baseline opacities; only incident edges in focus mode get glow.
         if (edge.type === 'PHYSICAL') {
           ctx.strokeStyle = `rgba(0, 243, 255, ${0.28 * a})`;
           ctx.lineWidth = incident ? 2 : 1.2;
@@ -545,7 +669,6 @@ export class CanvasRenderer {
       }
     }
 
-    // Neighborhood set for focus dimming.
     const focusNeighbors = activeId != null ? this.adjacency.get(activeId) : null;
 
     const communityColors = [
@@ -553,7 +676,6 @@ export class CanvasRenderer {
       '#ff5555', '#8be9fd', '#ffb86c', '#6272a4',
     ];
 
-    // §5.4 LOD: Node rendering
     for (const node of nodes) {
       const pos = this.nodePositions.get(node.id);
       if (!pos) continue;
@@ -562,14 +684,13 @@ export class CanvasRenderer {
       if (!this.isVisible(pos.x, pos.y, size * 2, w, h)) continue;
 
       const isHub = hubNodes.has(node.id);
-
-      // §5.4: Hub Nodes always render at all zoom levels
       if (zoom < 0.3 && !isHub) continue;
 
-      // In focus mode, the active node + its neighbors stay solid; the rest fade.
+      // F2: Highlighted nodes ignore focus-mode alpha decay
+      const isHighlighted = this.highlightedNodes.has(node.id);
       const inFocus =
         activeId == null || node.id === activeId || (focusNeighbors?.has(node.id) ?? false);
-      ctx.globalAlpha = inFocus ? 1 : 0.15;
+      ctx.globalAlpha = isHighlighted ? 1 : (inFocus ? 1 : 0.15);
 
       const colorIdx = (node.community ?? 0) % communityColors.length;
 
@@ -584,6 +705,10 @@ export class CanvasRenderer {
         ctx.fillStyle = '#50fa7b';
         ctx.shadowColor = '#50fa7b';
         ctx.shadowBlur = 12;
+      } else if (isHighlighted) {
+        ctx.fillStyle = '#f1fa8c';
+        ctx.shadowColor = '#f1fa8c';
+        ctx.shadowBlur = 12 + 4 * Math.sin(Date.now() / 300);
       } else {
         ctx.fillStyle = communityColors[colorIdx];
         ctx.shadowColor = communityColors[colorIdx];
@@ -593,20 +718,26 @@ export class CanvasRenderer {
       ctx.fill();
       ctx.shadowBlur = 0;
 
-      // Label LOD — kept sparse so 87 labels don't overlap into noise:
-      //   zoom < 0.45: no labels (except focused neighborhood)
-      //   0.45 <= zoom < 1.4: only prominent (high-degree) / hub nodes
-      //   zoom >= 1.4: all labels
-      // The focused node + its neighbors always get labels regardless of zoom.
-      // Prominence keys off the degree-derived size so the few well-connected
-      // nodes stay named even when (as here) the graph has no designated hubs.
+      // F1: Pin indicator — small white outer ring for pinned nodes
+      if (this.pinnedNodes.has(node.id)) {
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, size + 4, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+
+      // Label LOD
       const labelByFocus = activeId != null && inFocus;
       const isProminent = isHub || size >= 9;
       if (labelByFocus || zoom >= 1.4 || (zoom >= 0.45 && isProminent)) {
-        ctx.fillStyle = '#c9d1d9';
-        ctx.font = `${Math.max(9, 11 / Math.max(0.5, zoom))}px monospace`;
-        ctx.textAlign = 'center';
-        ctx.fillText(node.label || node.id, pos.x, pos.y + size + 12);
+        const label = node.label || node.id;
+        // F5: Use label cache with fixed font size, scale via drawImage
+        const { img, w: lw, h: lh } = this.getLabelImage(label);
+        const targetPx = Math.max(9, 11 / Math.max(0.5, zoom));
+        const s = targetPx / CanvasRenderer.LABEL_FONT_PX;
+        const dw = lw * s, dh = lh * s;
+        ctx.drawImage(img, pos.x - dw / 2, pos.y + size + 12, dw, dh);
       }
 
       ctx.globalAlpha = 1;
