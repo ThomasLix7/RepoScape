@@ -52,6 +52,11 @@ export function App() {
     if (diff.hubNodes) {
       setHubNodes(new Set(diff.hubNodes));
     }
+
+    // §6.A: Wake d3-force simulation on non-empty GraphDiff
+    if (rendererRef.current) {
+      rendererRef.current.wakeSimulation();
+    }
   }, []);
 
   const handleFullGraph = useCallback(

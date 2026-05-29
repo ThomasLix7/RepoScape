@@ -194,9 +194,6 @@ async function main(): Promise<void> {
   // §4.C: Unlink stale token before project size guard
   await unlinkStaleToken(projectRoot);
 
-  const token = await generateSessionToken(projectRoot);
-  console.log(`Session token saved to .reposcape/.session-token`);
-
   const compiler = new GraphCompiler(projectRoot);
   try {
     await compiler.init();
@@ -213,11 +210,16 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // §3: Project size guard
+  // §3: Project size guard — BEFORE generating token
+  // §4.C: "On guard proceed: false, no token is generated and daemon.ts exits 0. Disk is clean."
   const guardResult = await projectSizeGuard(compiler, projectRoot);
   if (!guardResult.proceed) {
     process.exit(0);
   }
+
+  // §4.C: Generate token only on proceed: true
+  const token = await generateSessionToken(projectRoot);
+  console.log(`Session token saved to .reposcape/.session-token`);
 
   // §3: Apply scope to compiler and watcher
   if (guardResult.scopeRoot) {
