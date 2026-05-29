@@ -1,0 +1,48 @@
+{
+  "name": "reposcape",
+  "version": "1.0.0",
+  "type": "module",
+  "bin": {
+    "reposcape": "./dist/server/daemon.js"
+  },
+  "scripts": {
+    "build:hud": "vite build",
+    "build:server": "tsc",
+    "build": "npm run build:hud && npm run build:server",
+    "dev:server": "REPOSCAPE_PORT=5174 tsx watch src/server/daemon.ts",
+    "dev:hud": "vite",
+    "dev": "concurrently -k \"REPOSCAPE_PORT=5174 tsx watch src/server/daemon.ts\" \"vite\"",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "chokidar": "^3.6.0",
+    "d3-force": "^3.0.0",
+    "dompurify": "^3.1.2",
+    "express": "^4.19.2",
+    "graphology": "^0.25.4",
+    "graphology-communities-louvain": "^2.0.1",
+    "js-yaml": "^4.1.0",
+    "jsonc-parser": "^3.2.1",
+    "open": "^10.1.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "tree-sitter-wasms": "^0.1.11",
+    "web-tree-sitter": "^0.22.2",
+    "ws": "^8.17.0"
+  },
+  "devDependencies": {
+    "@types/d3-force": "^3.0.9",
+    "@types/express": "^4.17.21",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.12.7",
+    "@types/react": "^18.2.79",
+    "@types/react-dom": "^18.2.25",
+    "@types/ws": "^8.5.10",
+    "@vitejs/plugin-react": "^4.2.1",
+    "concurrently": "^8.2.2",
+    "tsx": "^4.22.3",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.8",
+    "vitest": "^1.5.0"
+  }
+}
