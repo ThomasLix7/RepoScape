@@ -81,7 +81,6 @@ export function identifyHubNodes(nodes: { id: string }[], edges: { source: strin
   return hubNodes;
 }
 
-// §2.C: ModuleResolver — converts (callerFile, moduleSpecifier) → projectRelativePath | null
 export class ModuleResolver {
   private projectRoot: string;
   private tsconfigDir: string = '';
@@ -98,7 +97,6 @@ export class ModuleResolver {
     if (this.initialized) return;
     this.initialized = true;
 
-    // Find and parse tsconfig.json
     const tsconfigPath = await this.findTsconfig();
     if (tsconfigPath) {
       this.tsconfigDir = path.dirname(tsconfigPath);
@@ -113,7 +111,6 @@ export class ModuleResolver {
           this.paths = config.compilerOptions.paths;
         }
       } catch {
-        // tsconfig not parseable — no aliases
       }
     }
   }
@@ -130,13 +127,11 @@ export class ModuleResolver {
         await fs.access(candidate);
         return candidate;
       } catch {
-        // try jsconfig.json too
         const jsCandidate = path.join(dir, 'jsconfig.json');
         try {
           await fs.access(jsCandidate);
           return jsCandidate;
         } catch {
-          // continue up
         }
       }
       const parent = path.dirname(dir);
@@ -146,31 +141,25 @@ export class ModuleResolver {
     return null;
   }
 
-  // §2.C: Main resolution pipeline
   async resolve(callerFile: string, moduleSpecifier: string): Promise<string | null> {
     if (!this.initialized) await this.init();
 
-    // Step 1/2: Generate candidates
     const candidates: string[] = [];
 
     if (moduleSpecifier.startsWith('./') || moduleSpecifier.startsWith('../')) {
-      // Step 2: Relative resolution
       const callerDir = path.dirname(callerFile);
       const absCandidate = path.resolve(this.projectRoot, callerDir, moduleSpecifier);
       candidates.push(absCandidate);
     } else {
-      // Step 1: Path-alias rewrite (non-relative specifiers)
       const aliasCandidates = this.resolveAliases(moduleSpecifier);
       if (aliasCandidates.length > 0) {
         candidates.push(...aliasCandidates);
       }
-      // If no alias match, this is a bare package — return null
       if (aliasCandidates.length === 0) {
         return null;
       }
     }
 
-    // Steps 3-5: Try each candidate
     for (const absCandidate of candidates) {
       const result = await this.tryCandidate(absCandidate);
       if (result) return result;
@@ -196,7 +185,6 @@ export class ModuleResolver {
   }
 
   private async tryCandidate(absPath: string): Promise<string | null> {
-    // Step 3: ESM .js/.jsx source rewrite
     let candidate = absPath;
     if (candidate.endsWith('.js')) {
       const tsCandidate = candidate.slice(0, -3) + '.ts';
@@ -216,8 +204,6 @@ export class ModuleResolver {
       }
     }
 
-    // Step 4: Extension / index fallback
-    // If the candidate has a registered extension and exists, accept it
     const ext = path.extname(candidate);
     if (this.supportedExtensions.includes(ext)) {
       if (await this.fileExistsCaseSensitive(candidate)) {
@@ -225,7 +211,6 @@ export class ModuleResolver {
       }
     }
 
-    // Try adding extensions
     for (const ext of this.supportedExtensions) {
       const withExt = candidate + ext;
       if (await this.fileExistsCaseSensitive(withExt)) {
@@ -233,7 +218,6 @@ export class ModuleResolver {
       }
     }
 
-    // Try index files
     for (const ext of this.supportedExtensions) {
       const indexPath = path.join(candidate, `index${ext}`);
       if (await this.fileExistsCaseSensitive(indexPath)) {
@@ -244,11 +228,10 @@ export class ModuleResolver {
     return null;
   }
 
-  // Step 5: Sandbox check + relativize
   private sandboxAndRelativize(absPath: string): string | null {
     const rel = path.relative(this.projectRoot, absPath);
     if (rel.startsWith('..') || path.isAbsolute(rel)) {
-      return null; // escapes root
+      return null;
     }
     return rel.replace(/\\/g, '/');
   }

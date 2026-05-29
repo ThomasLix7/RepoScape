@@ -16,7 +16,6 @@ describe('stabilizeCommunities', () => {
       ['d', 7],
     ]);
     const result = stabilizeCommunities(newC, old);
-    // Should map 5->0 and 7->1 (or vice versa)
     expect(result.get('a')).toBe(result.get('b'));
     expect(result.get('c')).toBe(result.get('d'));
     expect(result.get('a')).not.toBe(result.get('c'));

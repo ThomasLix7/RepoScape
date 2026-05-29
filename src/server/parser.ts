@@ -8,7 +8,6 @@ import { ExtractionResult, LanguageStrategy, GraphNode, GraphEdge, RawExportEntr
 const require = createRequire(import.meta.url);
 
 export async function initParser(projectRoot: string): Promise<Parser> {
-  // §1.A: Core runtime must come from web-tree-sitter, not tree-sitter-wasms
   const corePath = require.resolve('web-tree-sitter/tree-sitter.wasm', {
     paths: [projectRoot, process.cwd(), path.dirname(new URL(import.meta.url).pathname)],
   });
@@ -21,7 +20,6 @@ export async function initParser(projectRoot: string): Promise<Parser> {
 }
 
 export function resolveGrammarPath(projectRoot: string, grammarFile: string): string {
-  // §1.A: Grammars come from tree-sitter-wasms/out/
   const grammarsPkg = require.resolve('tree-sitter-wasms/package.json', {
     paths: [projectRoot, process.cwd(), path.dirname(new URL(import.meta.url).pathname)],
   });
@@ -57,7 +55,6 @@ export class ParserRegistry {
   }
 }
 
-// §5: Use hash of full relative path to avoid collisions across files with same basename
 function makeNodeId(filePath: string, name: string): string {
   const stem = crypto.createHash('sha256').update(filePath).digest('hex').slice(0, 8);
   return `${stem}_${name}`.toLowerCase().replace(/[^a-z0-9_]/g, '_');
@@ -92,14 +89,9 @@ export class TypeScriptStrategy implements LanguageStrategy {
       source_file: filePath,
     });
 
-    // Track identifiers declared in this file for default export resolution
     const localDeclarations = new Map<string, string>();
-    // Track import bindings for re-export detection
     const importBindings = new Map<string, { moduleSpecifier: string; importedName: string }>();
 
-    // §2.F: Tree-sitter field helpers — never use text.includes as a classifier
-    // Note: keywords like 'default', '*', 'type' are anonymous tokens (isNamed=false)
-    // and only appear in node.children, NOT in node.namedChildren.
     const isDefaultExport = (node: Parser.SyntaxNode): boolean => {
       return node.children.some((c) => c.type === 'default' && !c.isNamed);
     };
@@ -111,7 +103,6 @@ export class TypeScriptStrategy implements LanguageStrategy {
     };
 
     const traverse = (node: Parser.SyntaxNode) => {
-      // §2.A: Import declarations → RawImportEntry[]
       if (node.type === 'import_statement' || node.type === 'import_declaration') {
         const sourceNode = node.namedChildren.find(
           (c) => c.type === 'string' || c.type === 'string_fragment'
@@ -121,12 +112,10 @@ export class TypeScriptStrategy implements LanguageStrategy {
           const source_location = `L${node.startPosition.row + 1}`;
           const isTypeOnly = node.text.startsWith('import type');
 
-          // Side-effect import: import './setup'
           const importClause = node.namedChildren.find((c) => c.type === 'import_clause');
           if (!importClause) {
             rawImports.push({ kind: 'side-effect', moduleSpecifier, source_location });
           } else {
-            // namespace import: import * as ns from './a'
             const namespaceImport = importClause.namedChildren.find((c) => c.type === 'namespace_import');
             if (namespaceImport) {
               const localName = namespaceImport.namedChildren.find((c) => c.type === 'identifier')?.text || 'default';
@@ -137,7 +126,6 @@ export class TypeScriptStrategy implements LanguageStrategy {
                 source_location,
               });
             } else {
-              // default import or named imports
               const defaultImport = importClause.namedChildren.find((c) => c.type === 'identifier');
               if (defaultImport) {
                 rawImports.push({
@@ -146,22 +134,19 @@ export class TypeScriptStrategy implements LanguageStrategy {
                   localName: defaultImport.text,
                   source_location,
                 });
-                // Track import binding for re-export detection
                 if (!isTypeOnly) {
                   importBindings.set(defaultImport.text, { moduleSpecifier, importedName: 'default' });
                 }
               }
               const namedImports = importClause.namedChildren.find((c) => c.type === 'import_specifiers' || c.type === 'named_imports');
               if (namedImports) {
-                const stmtIsTypeOnly = isTypeOnly; // outer `import type { … }`
+                const stmtIsTypeOnly = isTypeOnly;
                 for (const specifier of namedImports.namedChildren) {
                   if (specifier.type === 'import_specifier') {
-                    // §2.F: Use childForFieldName for specifiers
                     const importedNode = specifier.childForFieldName('name');
                     const aliasNode = specifier.childForFieldName('alias');
                     const importedName = importedNode?.text || '';
                     const localName = aliasNode?.text || importedName;
-                    // §2.F: Per-specifier type keyword check
                     const specIsTypeOnly = stmtIsTypeOnly ||
                       specifier.children.some((c) => c.type === 'type' && !c.isNamed);
                     if (importedName) {
@@ -172,7 +157,6 @@ export class TypeScriptStrategy implements LanguageStrategy {
                         localName,
                         source_location,
                       });
-                      // Track import binding for re-export detection (value imports only)
                       if (!specIsTypeOnly) {
                         importBindings.set(localName, { moduleSpecifier, importedName });
                       }
@@ -185,13 +169,11 @@ export class TypeScriptStrategy implements LanguageStrategy {
         }
       }
 
-      // §2.A: Export declarations — always emit rawExports
       if (node.type === 'export_statement') {
         const sourceNode = node.namedChildren.find(
           (c) => c.type === 'string' || c.type === 'string_fragment'
         );
         const sourceFile = sourceNode ? sourceNode.text.replace(/['"]/g, '') : undefined;
-        // §2.F: Use tree-sitter structure, not text.includes
         const hasStar = hasStarSpecifier(node);
         const isTypeOnly = isTypeOnlyExport(node);
 
@@ -200,14 +182,12 @@ export class TypeScriptStrategy implements LanguageStrategy {
         } else {
           const exportClause = node.namedChildren.find((c) => c.type === 'export_clause');
           if (exportClause) {
-            const stmtIsTypeOnly = isTypeOnly; // outer `export type { … }`
+            const stmtIsTypeOnly = isTypeOnly;
             for (const specifier of exportClause.namedChildren) {
               if (specifier.type === 'export_specifier') {
-                // §2.F: Use childForFieldName for export specifiers
                 const nameNode = specifier.childForFieldName('name');
                 const aliasNode = specifier.childForFieldName('alias');
                 const localName = nameNode?.text;
-                // §2.F: Per-specifier type keyword check
                 const specIsTypeOnly = stmtIsTypeOnly ||
                   specifier.children.some((c) => c.type === 'type' && !c.isNamed);
                 if (localName) {
@@ -231,7 +211,6 @@ export class TypeScriptStrategy implements LanguageStrategy {
                 c.type === 'variable_declaration'
             );
             if (decl) {
-              // §2.F: Use tree-sitter structure to detect 'default' keyword
               if (isDefaultExport(node)) {
                 rawExports.push({ symbol: 'default', exportKind: isTypeOnly ? 'type' : 'value' });
               } else {
@@ -249,8 +228,6 @@ export class TypeScriptStrategy implements LanguageStrategy {
         }
       }
 
-      // §2.A: Code node emission — ALWAYS emit, even for exported declarations
-      // Remove the v2 guard: `if (node.parent?.type !== 'export_statement')`
       if (
         node.type === 'function_declaration' ||
         node.type === 'method_definition' ||
@@ -278,15 +255,12 @@ export class TypeScriptStrategy implements LanguageStrategy {
           });
           localDeclarations.set(nameNode.text, funcId);
 
-          // §2.A: Track defaultExportNodeId for named declarations
-          // §2.F: Use tree-sitter structure, not text.includes
           if (node.parent?.type === 'export_statement' && isDefaultExport(node.parent)) {
             defaultExportNodeId = funcId;
           }
         }
       }
 
-      // §2.A: Arrow functions and anonymous callables on variable declarators
       if (
         node.type === 'lexical_declaration' ||
         node.type === 'variable_declaration'
@@ -303,12 +277,10 @@ export class TypeScriptStrategy implements LanguageStrategy {
               c.type === 'class'
           );
 
-          // §2.A: Always emit a code node for the declarator name
           const funcId = makeNodeId(filePath, nameNode.text);
           const sourceLocation = `L${declarator.startPosition.row + 1}`;
 
           if (init) {
-            // Named callable on a variable declarator
             nodes.push({
               id: funcId,
               label: nameNode.text,
@@ -327,20 +299,16 @@ export class TypeScriptStrategy implements LanguageStrategy {
           }
           localDeclarations.set(nameNode.text, funcId);
 
-          // §2.A: Track defaultExportNodeId for variable declarators
-          // §2.F: Use tree-sitter structure, not text.includes
           if (node.parent?.type === 'export_statement' && isDefaultExport(node.parent)) {
             defaultExportNodeId = funcId;
           }
         }
       }
 
-      // §2.A: Call expressions → rawCalls
       if (node.type === 'call_expression') {
         const funcNode = node.namedChildren[0];
         if (funcNode) {
           const callee = funcNode.text;
-          // §2.F: Use tree-sitter node type, not text.includes('.')
           const isMemberCall =
             funcNode.type === 'member_expression' ||
             funcNode.type === 'subscript_expression';
@@ -360,18 +328,13 @@ export class TypeScriptStrategy implements LanguageStrategy {
 
     traverse(rootNode);
 
-    // §2.A: Second pass for default export identifier resolution
-    // Handle `export default foo;` where foo is a local declaration
     if (!defaultExportNodeId) {
-      // §2.F: Use tree-sitter fields, not regex/text matching
       const findDefaultExportIdentifier = (node: Parser.SyntaxNode): string | null => {
         if (node.type === 'export_statement' && isDefaultExport(node)) {
-          // Use childForFieldName('value') to get the exported expression
           const value = node.childForFieldName('value');
           if (value && (value.type === 'identifier' || value.type === 'type_identifier')) {
             return value.text;
           }
-          // Fallback: walk namedChildren for identifier after 'default'
           for (const child of node.namedChildren) {
             if ((child.type === 'identifier' || child.type === 'type_identifier') && child.text !== 'default') {
               return child.text;
@@ -391,7 +354,6 @@ export class TypeScriptStrategy implements LanguageStrategy {
         if (resolved) {
           defaultExportNodeId = resolved;
         } else {
-          // §2.A: Check if it matches an import binding — emit re-export entry
           const importBinding = importBindings.get(defaultIdent);
           if (importBinding) {
             rawExports.push({
@@ -401,17 +363,13 @@ export class TypeScriptStrategy implements LanguageStrategy {
               exportKind: 'value',
             });
           }
-          // §2.A: If unresolved, leave undefined — don't synthesize
-          // §2.A: Surface diagnostic for the compiler to log
           diagnostics.push(`default-export-unresolved-identifier: ${defaultIdent} in ${filePath}`);
         }
       }
     }
 
-    // §2.A: For anonymous default exports, synthesize a node
     if (!defaultExportNodeId) {
       const hasAnonymousDefault = (node: Parser.SyntaxNode): boolean => {
-        // §2.F: Use tree-sitter structure, not text.includes
         if (node.type === 'export_statement' && isDefaultExport(node)) {
           const hasNamedDecl = node.namedChildren.some(
             (c) => c.type === 'function_declaration' || c.type === 'class_declaration'
@@ -478,13 +436,9 @@ export class PythonStrategy implements LanguageStrategy {
     });
 
     const traverse = (node: Parser.SyntaxNode) => {
-      // §2.A Python mapping
       if (node.type === 'import_statement') {
-        // `import x` or `import x as y` → namespace
         for (const child of node.namedChildren) {
           if (child.type === 'dotted_name' || child.type === 'aliased_import') {
-            // TODO(v3.1): Python cross-module resolution. moduleSpecifier here is the
-            // raw dotted name (e.g. "x.y"); the resolver does not yet handle it.
             const nameNode =
               child.type === 'aliased_import'
                 ? child.namedChildren.find((c) => c.type === 'dotted_name')
@@ -494,7 +448,6 @@ export class PythonStrategy implements LanguageStrategy {
                 ? child.namedChildren.find((c) => c.type === 'identifier')
                 : null;
             const moduleSpecifier = nameNode?.text ?? '';
-            // `import x.y` binds the top-level name `x`, not `x.y`.
             const localName =
               aliasNode?.text ?? moduleSpecifier.split('.')[0];
             if (moduleSpecifier && localName) {
@@ -514,13 +467,11 @@ export class PythonStrategy implements LanguageStrategy {
         const moduleSpecifier = moduleNode?.text?.replace(/\./g, '/') || '';
         const source_location = `L${node.startPosition.row + 1}`;
 
-        // §2.F: Use tree-sitter structure to detect wildcard import
         const hasWildcard = node.namedChildren.some((c) => c.type === 'wildcard_import');
         if (hasWildcard) {
           rawImports.push({ kind: 'side-effect', moduleSpecifier, source_location });
         } else {
           for (const child of node.namedChildren) {
-            // Skip the module specifier node — it's the "from x" part, not an imported name
             if (child === moduleNode) continue;
             if (child.type === 'aliased_import' || child.type === 'dotted_name' || child.type === 'identifier') {
               const nameNode = child.type === 'aliased_import'

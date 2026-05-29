@@ -25,20 +25,16 @@ export function App() {
   const [showCognitive, setShowCognitive] = useState(true);
   const [showSuspicious, setShowSuspicious] = useState(true);
 
-  // F2: Search state
   const [searchQuery, setSearchQuery] = useState('');
 
-  // F3: Filter state
   const [activeFileTypes, setActiveFileTypes] = useState<Set<string>>(
     new Set(['code', 'document', 'concept'])
   );
   const [activeCommunities, setActiveCommunities] = useState<Set<number> | null>(null);
   const [pathPrefix, setPathPrefix] = useState('');
 
-  // §6.C: Track all focus timers in a ref-backed Set for cleanup
   const focusTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
-  // F0: Ref for renderer data — renderer reads from this, never recreated
   const renderStateRef = useRef({
     nodes: [] as GraphNode[],
     edges: [] as GraphEdge[],
@@ -69,17 +65,14 @@ export function App() {
       return Array.from(map.values());
     });
 
-    // §4: Update hubNodes from diff
     if (diff.hubNodes) {
       setHubNodes(new Set(diff.hubNodes));
     }
 
-    // §6.A: Wake d3-force simulation on non-empty GraphDiff
     if (rendererRef.current) {
       rendererRef.current.wakeSimulation();
     }
 
-    // F0: Clean up removed node state from renderer
     if (diff.removedNodes.length) rendererRef.current?.removeNodes(diff.removedNodes);
   }, []);
 
@@ -99,7 +92,6 @@ export function App() {
     if (left !== undefined) setAttemptsLeft(left);
   }, []);
 
-  // §2C: Handle focus events from daemon
   const handleFocus = useCallback((event: { file: string; activity?: string; impacted_nodes?: string[] }) => {
     setNodes((prev) =>
       prev.map((n) => {
@@ -136,7 +128,6 @@ export function App() {
     return () => conn.close();
   }, [handleDiff, handleFullGraph, handleStatusChange, handleFocus]);
 
-  // §6.C: Cleanup all focus timers on unmount
   useEffect(() => {
     return () => {
       for (const timer of focusTimersRef.current) {
@@ -146,7 +137,6 @@ export function App() {
     };
   }, []);
 
-  // F3: Filter logic
   const filteredNodes = useMemo(() => {
     return nodes.filter(n => {
       if (!activeFileTypes.has(n.file_type)) return false;
@@ -167,7 +157,6 @@ export function App() {
     [nodes]
   );
 
-  // F2: Search logic
   const searchResults = useMemo(() => {
     if (!searchQuery.trim()) return [];
     const q = searchQuery.toLowerCase();
@@ -176,7 +165,6 @@ export function App() {
     );
   }, [searchQuery, nodes]);
 
-  // F2: Sync highlight set to renderer
   useEffect(() => {
     rendererRef.current?.setHighlightedNodes(
       new Set(searchResults.map(n => n.id))
@@ -206,7 +194,6 @@ export function App() {
     setPathPrefix(p);
   }, []);
 
-  // F0: Singleton renderer — created once on mount, reads from renderStateRef
   useEffect(() => {
     if (!canvasRef.current) return;
 
@@ -244,7 +231,6 @@ export function App() {
     return () => { cancelAnimationFrame(animId); renderer.destroy(); };
   }, []);
 
-  // F0: Push latest state into ref (filtered data, not raw)
   renderStateRef.current = {
     nodes: filteredNodes,
     edges: filteredEdges,
@@ -258,11 +244,6 @@ export function App() {
     <div style={{ display: 'flex', width: '100vw', height: '100vh' }}>
       <canvas
         ref={canvasRef}
-        // minWidth/minHeight: 0 — a flex item defaults to min-width:auto, which
-        // for a <canvas> resolves to its intrinsic width/height attributes
-        // (set to rect.size * devicePixelRatio by the renderer). Without this the
-        // canvas refuses to shrink, overflows the row, and pushes the sidebar
-        // off-screen (clipped by body{overflow:hidden}).
         style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'block', cursor: 'grab' }}
       />
       <Sidebar

@@ -57,7 +57,6 @@ export function createRoutes(
       event.ttl = Math.max(MIN_TTL, Math.min(MAX_TTL, event.ttl || 60000));
       focusRegistry.set(event.file, event);
 
-      // §2C: Broadcast focus event to HUD clients
       if (broadcastFocus) {
         broadcastFocus({ file: event.file, activity: event.activity, impacted_nodes: event.impacted_nodes });
       }
@@ -77,7 +76,6 @@ export function createRoutes(
       }
       focusRegistry.set(file, { file, activity, timestamp: timestamp || Date.now(), ttl: ttl || 60000 });
 
-      // §2C: Broadcast agent activity to HUD clients
       if (broadcastFocus) {
         broadcastFocus({ file, activity });
       }
@@ -107,7 +105,6 @@ export function createRoutes(
         return;
       }
 
-      // §4.A: Insights go to .reposcape/insights/ (user data, not cache)
       const insightsDir = path.join(projectRoot, '.reposcape', 'insights');
       await ensureDir(insightsDir);
 
@@ -135,21 +132,18 @@ export function createRoutes(
           results.push({ file: extraction.file, status: 'ok' });
           anySuccess = true;
         } catch (err: any) {
-          // §7.C: Return per-entry failure on lock exhaustion
           results.push({ file: extraction.file, status: 'lock_failed', error: err.message } as any);
           await appendErrorLog(projectRoot, `Lock failed for insight ${extraction.file}: ${err.message}`);
         }
       }
 
       if (anySuccess && broadcastDiff) {
-        // §3.A: Use compileAndDiff for atomic diff
         compiler.compileAndDiff().then(({ diff }) => {
           broadcastDiff!({
             ...diff,
             hubNodes: Array.from(compiler.getHubNodes()),
           });
         }).catch((err: any) => {
-          // §3.D: Log errors, don't silently swallow
           appendErrorLog(projectRoot, `Background recompile after insights batch failed: ${err.message}`);
         });
         res.json({ results, refresh: 'queued' });

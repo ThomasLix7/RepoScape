@@ -17,7 +17,7 @@ export async function writeCacheAtomic(filePath: string, content: string): Promi
     if (err.code !== 'ENOENT') throw err;
   }
 
-  // §7.C: Raise retry ceiling to 30 (~3s worst case)
+  // Retry up to 30 times (~3s)
   let retries = 30;
   while (retries > 0) {
     try {

@@ -14,12 +14,10 @@ interface SidebarProps {
   onTogglePhysical: () => void;
   onToggleCognitive: () => void;
   onToggleSuspicious: () => void;
-  // F2: Search
   searchQuery: string;
   searchResults: GraphNode[];
   onSearchChange: (q: string) => void;
   onSearchSelect: (nodeId: string) => void;
-  // F3: Filter
   availableCommunities: number[];
   activeFileTypes: Set<string>;
   activeCommunities: Set<number> | null;
@@ -98,7 +96,6 @@ export function Sidebar({
         </div>
       </div>
 
-      {/* F2: Search input */}
       <div style={{ borderTop: '1px solid #30363d', paddingTop: 12 }}>
         <input
           type="text"
@@ -175,11 +172,9 @@ export function Sidebar({
         </label>
       </div>
 
-      {/* F3: Node Filter panel */}
       <div style={{ borderTop: '1px solid #30363d', paddingTop: 12 }}>
         <div style={{ color: '#8b949e', fontSize: 11, marginBottom: 8 }}>NODE FILTER</div>
 
-        {/* File type toggles */}
         <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
           {FILE_TYPES.map(ft => (
             <label key={ft} style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
@@ -193,7 +188,6 @@ export function Sidebar({
           ))}
         </div>
 
-        {/* Community selector */}
         <div style={{ marginBottom: 8 }}>
           <div style={{ color: '#8b949e', fontSize: 10, marginBottom: 4 }}>Community</div>
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
@@ -244,7 +238,6 @@ export function Sidebar({
           </div>
         </div>
 
-        {/* Path prefix filter */}
         <div>
           <div style={{ color: '#8b949e', fontSize: 10, marginBottom: 4 }}>Path</div>
           <input

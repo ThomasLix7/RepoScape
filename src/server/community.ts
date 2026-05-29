@@ -17,7 +17,6 @@ export function runLouvainClustering(
     graph.addNode(id);
   }
 
-  // §7: Aggregate bidirectional edge weights into one undirected edge
   const weightMap = new Map<string, number>();
   for (const edge of edges) {
     const key = [edge.source, edge.target].sort().join('\0');
@@ -29,11 +28,9 @@ export function runLouvainClustering(
     try {
       graph.addEdge(a, b, { weight });
     } catch {
-      // skip edges with missing nodes
     }
   }
 
-  // Classic LCG seeded random generator to guarantee 100% determinism
   let seed = 42;
   const rng = () => {
     seed = (seed * 1103515245 + 12345) & 0x7fffffff;
@@ -41,8 +38,8 @@ export function runLouvainClustering(
   };
 
   const result = louvainFn(graph, {
-    resolution: 1.0, // Strictly locked resolution parameter
-    rng: rng, // Custom seeded RNG for absolute reproducibility
+    resolution: 1.0,
+    rng: rng,
   });
 
   return new Map(Object.entries(result) as [string, number][]);
@@ -64,7 +61,6 @@ export function stabilizeCommunities(
     oldSets.get(cid)!.add(node);
   }
 
-  // Calculate greedy overlaps using Jaccard Similarity index
   const mappings = new Map<number, number>();
   const usedOld = new Set<number>();
 

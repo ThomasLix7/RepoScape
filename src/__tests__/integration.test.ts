@@ -6,9 +6,6 @@ import { GraphCompiler } from '../server/compiler.js';
 import { unwrapReexports } from '../server/resolver.js';
 import { RawImportEntry } from '../server/types.js';
 
-// §8: Acceptance Gate — Integration Tests
-// These tests REQUIRE the tree-sitter parser. If it fails to init, the tests
-// MUST fail (not skip) — this is the §1 failure mode the spec was designed to catch.
 describe('Integration — Acceptance Gate', () => {
   const projectRoot = path.resolve(import.meta.dirname, '..', '..');
   let compiler: GraphCompiler;
@@ -16,7 +13,6 @@ describe('Integration — Acceptance Gate', () => {
   beforeAll(async () => {
     compiler = new GraphCompiler(projectRoot);
     compiler.setScopeRoot(path.join(projectRoot, 'src', 'server'));
-    // §1: Non-zero exit on parser init failure — tests MUST fail, not skip
     await compiler.init();
   }, 30000);
 
@@ -41,7 +37,6 @@ describe('Integration — Acceptance Gate', () => {
   });
 
   it('§8.3: Second compileAndDiff() produces zero net addedEdges/removedEdges', async () => {
-    // First compile already done. Second compile should be a true no-op.
     const { diff } = await compiler.compileAndDiff();
 
     expect(diff.addedEdges.length).toBe(0);
@@ -53,16 +48,11 @@ describe('Integration — Acceptance Gate', () => {
     const graph = await compiler.compile();
     const resolver = compiler.getModuleResolver();
 
-    // D = distinct (callerFile, resolvedTargetFile) pairs derived from non-type
-    // RawImportEntry records whose ModuleResolver.resolve(...) returns non-null.
-    // edgeTargetFile is computed per §2.D: for default/named it's unwrapReexports(...).filePath;
-    // for side-effect/namespace it's targetFile.
     const rawImports = compiler.getRawImports();
     const fileExportsCache = compiler.getFileExportsCache();
 
     const denominatorPairs = new Set<string>();
     for (const { caller, entry } of rawImports) {
-      // Skip type-only imports
       if (entry.kind === 'type-default' || entry.kind === 'type-named') continue;
 
       const targetFile = await resolver.resolve(caller, entry.moduleSpecifier);
@@ -88,7 +78,6 @@ describe('Integration — Acceptance Gate', () => {
       denominatorPairs.add(`${caller}→${edgeTargetFile!}`);
     }
 
-    // N = distinct (source_file, target_file) pairs for imports edges whose target exists in nodes
     const nodeIds = new Set(graph.nodes.map((n) => n.id));
     const numeratorPairs = new Set<string>();
     for (const edge of graph.edges) {
@@ -103,36 +92,28 @@ describe('Integration — Acceptance Gate', () => {
     const D = denominatorPairs.size;
     const N = numeratorPairs.size;
 
-    // Must have at least some import edges
     expect(D).toBeGreaterThan(0);
-    // §8.3: Coverage gate
     expect(N / D).toBeGreaterThanOrEqual(0.95);
   });
 
   it('§4.B: Community map is deterministic across two consecutive compile() calls', async () => {
-    // First compile
     await compiler.compile();
     const communities1 = new Map(compiler.getCommunities());
     const serialized1 = JSON.stringify(
       [...communities1.entries()].sort((a, b) => a[0].localeCompare(b[0]))
     );
 
-    // Second compile (no changes)
     await compiler.compile();
     const communities2 = new Map(compiler.getCommunities());
     const serialized2 = JSON.stringify(
       [...communities2.entries()].sort((a, b) => a[0].localeCompare(b[0]))
     );
 
-    // §8.4: Bitwise identical when serialized with deterministic ordering
     expect(serialized1).toBe(serialized2);
   });
 
   it('§8.5: Compiler throws (not silently continues) when parser cannot initialize', async () => {
-    // §1.A: Verify that assertParserReady() throws when parser is null.
-    // This is the contract: the compiler MUST NOT enter serve loop with a null parser.
     const badCompiler = new GraphCompiler(projectRoot);
-    // Don't call init() — parser stays null
     expect(() => badCompiler.assertParserReady()).toThrow(/Parser instance is null/);
   });
 });
@@ -151,10 +132,8 @@ describe('Import Resolution — End-to-End (§2.G)', () => {
       JSON.stringify({ compilerOptions: { baseUrl: '.', paths: { '@/*': ['src/*'] } } })
     );
 
-    // Create fixture files
     await fs.mkdir(path.join(projectRoot, 'src'), { recursive: true });
 
-    // src/a.ts — exports foo, bar, defaultFn
     await fs.writeFile(
       path.join(projectRoot, 'src', 'a.ts'),
       `export function foo() { return 1; }
@@ -163,13 +142,11 @@ export default function defaultFn() { return 3; }
 `
     );
 
-    // src/setup.ts — side-effect target
     await fs.writeFile(
       path.join(projectRoot, 'src', 'setup.ts'),
       `console.log('setup');\n`
     );
 
-    // src/caller.ts — comprehensive import test
     await fs.writeFile(
       path.join(projectRoot, 'src', 'caller.ts'),
       `import { foo as bar } from './a';
@@ -183,13 +160,11 @@ defaultFn();
 `
     );
 
-    // src/default-named.ts — export default function
     await fs.writeFile(
       path.join(projectRoot, 'src', 'default-named.ts'),
       `export default function namedDefault() { return 10; }\n`
     );
 
-    // src/default-ident.ts — export default identifier
     await fs.writeFile(
       path.join(projectRoot, 'src', 'default-ident.ts'),
       `function localFn() { return 11; }
@@ -197,13 +172,11 @@ export default localFn;
 `
     );
 
-    // src/default-anon.ts — export default anonymous
     await fs.writeFile(
       path.join(projectRoot, 'src', 'default-anon.ts'),
       `export default { key: 'value' };\n`
     );
 
-    // src/index.ts — barrel
     await fs.writeFile(
       path.join(projectRoot, 'src', 'index.ts'),
       `export { foo } from './a';
@@ -211,7 +184,6 @@ export { bar } from './a';
 `
     );
 
-    // src/barrel-caller.ts — imports from barrel
     await fs.writeFile(
       path.join(projectRoot, 'src', 'barrel-caller.ts'),
       `import { foo } from './index';
@@ -219,7 +191,6 @@ foo();
 `
     );
 
-    // src/case-caller.ts — mixed-case import bindings
     await fs.writeFile(
       path.join(projectRoot, 'src', 'case-caller.ts'),
       `import * as MyNS from './a';
@@ -231,7 +202,6 @@ MyFoo();
 `
     );
 
-    // Compile
     compiler = new GraphCompiler(projectRoot);
     await compiler.init();
     await compiler.compile();
@@ -254,10 +224,8 @@ MyFoo();
   it('§2.G.6: Side-effect import ./setup produces PHYSICAL edge but no binding', () => {
     const bindings = compiler.getFileBindings();
     const callerBindings = bindings.get('src/caller.ts');
-    // Side-effect import should not create a binding for 'setup'
     expect(callerBindings?.has('setup')).toBe(false);
 
-    // But there should be a PHYSICAL imports edge to setup.ts
     const edges = compiler.getEdges();
     const setupEdge = edges.find(
       (e) => e.relation === 'imports' && e.source_file === 'src/caller.ts'
@@ -278,10 +246,7 @@ MyFoo();
   it('§2.G.8: import type { Foo } produces no PHYSICAL edge and no binding', () => {
     const bindings = compiler.getFileBindings();
     const callerBindings = bindings.get('src/caller.ts');
-    // 'Foo' should not be in bindings (type-only)
     expect(callerBindings?.has('Foo')).toBe(false);
-    // But 'foo' from the non-type import should be there
-    // (actually caller.ts doesn't import 'foo' directly, it imports 'bar' alias)
   });
 
   it('§2.G.9: Barrel re-export: import { foo } from ./index resolves to src/a.ts', () => {
@@ -301,7 +266,6 @@ MyFoo();
     expect(caseCaller!.has('myns')).toBe(true);
     expect(caseCaller!.has('defaultfn')).toBe(true);
     expect(caseCaller!.has('myfoo')).toBe(true);
-    // Original-case keys must NOT be present
     expect(caseCaller!.has('MyNS')).toBe(false);
     expect(caseCaller!.has('DefaultFn')).toBe(false);
     expect(caseCaller!.has('MyFoo')).toBe(false);
@@ -312,12 +276,8 @@ MyFoo();
     const callsFromCaseCaller = edges.filter(
       (e) => e.relation === 'calls' && e.source_file === 'src/case-caller.ts',
     );
-    // MyFoo() and MyNS.foo() both resolve to src/a.ts:foo — same edge key, deduplicated.
-    // DefaultFn() resolves to src/a.ts:defaultFn.
-    // Minimum 2 unique call edges expected.
     expect(callsFromCaseCaller.length).toBeGreaterThanOrEqual(2);
 
-    // Every target must resolve to a node in src/a.ts
     const nodes = compiler.getNodes();
     const nodeById = new Map(nodes.map((n) => [n.id, n]));
     for (const edge of callsFromCaseCaller) {
@@ -330,9 +290,7 @@ MyFoo();
     const defaultExports = compiler.getDefaultExports();
     const nodeId = defaultExports.get('src/default-named.ts');
     expect(nodeId).toBeDefined();
-    // Should NOT be a synthetic :default node
     expect(nodeId).not.toContain(':default');
-    // Should contain the function name
     expect(nodeId).toContain('nameddefault');
   });
 
@@ -340,9 +298,7 @@ MyFoo();
     const defaultExports = compiler.getDefaultExports();
     const nodeId = defaultExports.get('src/default-ident.ts');
     expect(nodeId).toBeDefined();
-    // Should NOT be a synthetic :default node
     expect(nodeId).not.toContain(':default');
-    // Should contain the local function name
     expect(nodeId).toContain('localfn');
   });
 
@@ -350,12 +306,10 @@ MyFoo();
     const defaultExports = compiler.getDefaultExports();
     const nodeId = defaultExports.get('src/default-anon.ts');
     expect(nodeId).toBeDefined();
-    // SHOULD be a synthetic :default node
     expect(nodeId).toContain(':default');
   });
 
   it('§2.G.14: Warm-cache equivalence — same edges after cache rehydration', async () => {
-    // First compile — fresh (cold)
     const cold = await compiler.compile();
     const coldImportsKeys = new Set(
       cold.edges.filter((e) => e.relation === 'imports').map((e) => `${e.source}->${e.target}_imports`)
@@ -365,7 +319,6 @@ MyFoo();
     );
     const coldDefaults = new Map(compiler.getDefaultExports());
 
-    // Create a NEW compiler instance — forces cache rehydration path
     const compiler2 = new GraphCompiler(projectRoot);
     await compiler2.init();
     const warm = await compiler2.compile();
@@ -378,7 +331,6 @@ MyFoo();
     );
     const warmDefaults = new Map(compiler2.getDefaultExports());
 
-    // §2.G.14: Set equality, not count equality
     expect(warmImportsKeys).toEqual(coldImportsKeys);
     expect(warmCallsKeys).toEqual(coldCallsKeys);
     expect(warmDefaults).toEqual(coldDefaults);

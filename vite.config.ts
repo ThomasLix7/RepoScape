@@ -14,9 +14,7 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    // Fail loudly if 5173 is taken instead of silently falling back to 5174 —
-    // that fallback collides with the daemon (REPOSCAPE_PORT=5174) and also
-    // breaks the /api + /ws proxy below, which hard-points at 5174.
+    // Prevent port 5173 fallback colliding with daemon on 5174
     strictPort: true,
     proxy: {
       '/api': 'http://127.0.0.1:5174',

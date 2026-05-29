@@ -62,7 +62,7 @@ export function connectHUD(
   let pongWatchdog: ReturnType<typeof setTimeout> | null = null;
   let isClosed = false;
 
-  // §11: Strip token from URL after reading
+  // Strip token from URL
   try {
     const url = new URL(window.location.href);
     if (url.searchParams.has('token')) {
@@ -91,11 +91,11 @@ export function connectHUD(
       reconnectAttempts = 0;
       onStatusChange('connected');
 
-      // §5.3: Send pings every 30s, watchdog closes if no pong within 5s (§2B half-open defense)
+      // Keepalive ping interval
       pingInterval = setInterval(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'ping' }));
-          // Start watchdog: if no pong arrives in 5s, force close
+          // Watchdog: close connection if no pong in 5s
           if (pongWatchdog) clearTimeout(pongWatchdog);
           pongWatchdog = setTimeout(() => {
             if (ws && ws.readyState === WebSocket.OPEN) {
@@ -110,7 +110,7 @@ export function connectHUD(
       if (isClosed) return;
       const msg: WSMessage = JSON.parse(event.data);
       if (msg.type === 'pong') {
-        // §6: Clear watchdog on pong
+        // Clear watchdog on pong
         if (pongWatchdog) {
           clearTimeout(pongWatchdog);
           pongWatchdog = null;
@@ -123,7 +123,7 @@ export function connectHUD(
       if (msg.type === 'full_graph' && msg.graph) {
         onFullGraph(msg.graph);
       }
-      // §2C: Handle focus events from daemon
+      // Handle focus events
       if (msg.type === 'focus' && msg.focus && onFocus) {
         onFocus(msg.focus);
       }

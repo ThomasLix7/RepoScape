@@ -4,15 +4,14 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    // §1.A: web-tree-sitter uses CJS and tree-sitter-wasms ships WASM files.
-    // These need to be loaded natively by Node.js, not transformed by vitest.
+    // Load web-tree-sitter and tree-sitter-wasms natively
     server: {
       deps: {
         external: ['web-tree-sitter', 'tree-sitter-wasms'],
       },
     },
   },
-  // Ensure TypeScript source with .js extensions resolves correctly
+  // Resolve TS imports with .js extension
   resolve: {
     conditions: ['import', 'module', 'default'],
   },

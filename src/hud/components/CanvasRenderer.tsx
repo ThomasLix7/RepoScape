@@ -19,7 +19,6 @@ interface Camera {
   vy: number;
 }
 
-// §6.A: d3-force types (dynamic import)
 interface D3Node {
   id: string;
   community?: number;
@@ -50,45 +49,35 @@ export class CanvasRenderer {
   public onNodeClick: ((node: GraphNode | null) => void) | null = null;
   public onEdgeClick: ((edge: GraphEdge | null) => void) | null = null;
 
-  // Readability state: per-node size (by degree/hub) and the focused node.
   private nodeSizes = new Map<string, number>();
   private nodeCommunity = new Map<string, number>();
   private adjacency = new Map<string, Set<string>>();
   private selectedNodeId: string | null = null;
   private edgesSignature = '';
-  // Auto-fit frames the whole graph until the user pans/zooms themselves.
   private userInteracted = false;
 
-  // §6.A: d3-force simulation
   private d3Simulation: any = null;
   private d3Nodes: D3Node[] = [];
   private d3Edges: D3Edge[] = [];
   private simulationTimer: ReturnType<typeof setInterval> | null = null;
   private d3Module: any = null;
 
-  // F1: Node drag + pin state
   private draggedNode: D3Node | null = null;
   private pinnedNodes = new Set<string>();
   private didDrag = false;
   private suppressNextClick = false;
 
-  // F2: Search highlight
   private highlightedNodes = new Set<string>();
 
-  // F4: Frame-skip state
   private lastFrameHash = '';
   private frameSkipCount = 0;
   private lastNodes: GraphNode[] | null = null;
   private lastEdges: GraphEdge[] | null = null;
-  // Lookup of the live, fully-parsed node objects so hit-testing can return the
-  // real node (with source_file/metadata/community) instead of a stripped stub.
   private nodeById = new Map<string, GraphNode>();
 
-  // F5: Label texture cache
   private labelCache = new Map<string, { img: HTMLCanvasElement; w: number; h: number }>();
   private static readonly LABEL_FONT_PX = 13;
 
-  // §5.5 Camera Spring: F = -k·Δx − c·v, then v += F, x += v
   private readonly STIFFNESS = 0.08;
   private readonly DAMPING = 2 * Math.sqrt(0.08); // ≈0.566
 
@@ -101,7 +90,6 @@ export class CanvasRenderer {
     this.initD3Force();
   }
 
-  // F0: Remove nodes from renderer state on diff removal
   removeNodes(ids: string[]): void {
     for (const id of ids) {
       this.nodePositions.delete(id);
@@ -110,30 +98,26 @@ export class CanvasRenderer {
     }
   }
 
-  // §6.A: Initialize d3-force with dedicated simulation loop
   private async initD3Force(): Promise<void> {
     try {
       this.d3Module = await import('d3-force');
       this.startSimulation();
     } catch {
-      // d3-force not available — will fall back to hash positions
     }
   }
 
   private startSimulation(): void {
     if (!this.d3Module) return;
 
-    // §6.A: d3-force simulation at 30Hz (33ms interval)
     if (this.simulationTimer) {
       clearInterval(this.simulationTimer);
     }
 
-    const TICK_INTERVAL = 1000 / 30; // 30 Hz
+    const TICK_INTERVAL = 1000 / 30;
 
     this.simulationTimer = setInterval(() => {
       if (this.d3Simulation) {
         this.d3Simulation.tick();
-        // Copy positions from d3 nodes to our position map
         for (const d3n of this.d3Nodes) {
           if (d3n.x !== undefined && d3n.y !== undefined) {
             this.nodePositions.set(d3n.id, { x: d3n.x, y: d3n.y });
@@ -169,11 +153,7 @@ export class CanvasRenderer {
 
     const anchors = this.communityAnchors(nodes);
 
-    // Build d3 node/edge arrays
     const nodeIds = new Set(nodes.map((n) => n.id));
-    // Phyllotaxis (golden-angle) seeding: spreads new nodes on a spiral around
-    // their community anchor so no two ever start at the same point — collision
-    // can't separate perfectly-coincident nodes, which left a few stacked.
     const GOLDEN = Math.PI * (3 - Math.sqrt(5));
     this.d3Nodes = nodes.map((n, i) => {
       const existing = this.nodePositions.get(n.id);
@@ -181,7 +161,6 @@ export class CanvasRenderer {
       const anchor = anchors.get(community) ?? { x: 0, y: 0 };
       const r = 14 * Math.sqrt(i + 1);
       const a = i * GOLDEN;
-      // F1: Re-apply pinned fx/fy on rebuild so diffs don't unpin nodes
       const pinned = this.pinnedNodes.has(n.id) ? this.nodePositions.get(n.id) : null;
       return {
         id: n.id,
@@ -195,7 +174,6 @@ export class CanvasRenderer {
 
     this.d3Edges = edges
       .filter((e) => {
-        // §5.4: Exclude hub node PHYSICAL edges from force simulation
         if (e.type === 'PHYSICAL' && (hubNodes.has(e.source) || hubNodes.has(e.target))) {
           return false;
         }
@@ -203,15 +181,12 @@ export class CanvasRenderer {
       })
       .map((e) => ({ source: e.source, target: e.target }));
 
-    // Create or update simulation
     if (this.d3Simulation) {
       this.d3Simulation.stop();
     }
 
     this.d3Simulation = d3
       .forceSimulation(this.d3Nodes)
-      // Repulsion spreads nodes out; collision (below) guarantees no overlap
-      // regardless, so this just controls breathing room, not separation.
       .force('charge', d3.forceManyBody().strength(-320).distanceMax(500))
       .force(
         'link',
@@ -221,25 +196,16 @@ export class CanvasRenderer {
           .distance(70)
           .strength(0.06)
       )
-      // Per-community gravity: pull each node toward its ring anchor. Kept gentle
-      // so clusters stay grouped without collapsing to a point.
       .force('x', d3.forceX((d: any) => (anchors.get(d.community)?.x ?? 0)).strength(0.08))
       .force('y', d3.forceY((d: any) => (anchors.get(d.community)?.y ?? 0)).strength(0.08))
-      // Hard collision: radius tracks rendered size + padding, with iterations
-      // so overlaps actually resolve instead of just nudging.
       .force(
         'collision',
         d3.forceCollide((d: any) => (this.nodeSizes.get(d.id) ?? 6) + 12).strength(1).iterations(3)
       )
       .alphaDecay(0.02)
       .velocityDecay(0.4);
-
-    // §6.A: Simulation pauses on alpha-decay threshold
-    // d3-force handles this automatically via alphaMin
   }
 
-  // Degree-weighted node sizes + adjacency for focus mode. Recomputed only when
-  // the edge set changes (cheap signature check) so it's free on steady frames.
   private recomputeTopology(nodes: GraphNode[], edges: GraphEdge[], hubNodes: Set<string>): void {
     const sig = `${nodes.length}:${edges.length}`;
     if (sig === this.edgesSignature && this.nodeSizes.size === nodes.length) return;
@@ -263,14 +229,12 @@ export class CanvasRenderer {
     this.nodeSizes = new Map();
     for (const n of nodes) {
       const d = degree.get(n.id) ?? 0;
-      // sqrt keeps high-degree nodes from dwarfing everything; hubs get a floor.
       let size = 4 + 1.8 * Math.sqrt(d);
       if (hubNodes.has(n.id)) size = Math.max(size, 13);
       this.nodeSizes.set(n.id, Math.min(size, 22));
     }
   }
 
-  // The node currently driving focus mode: hover wins, else click selection.
   private activeNodeId(): string | null {
     return this.hoveredNode?.id ?? this.selectedNodeId;
   }
@@ -279,14 +243,12 @@ export class CanvasRenderer {
     this.selectedNodeId = id;
   }
 
-  // §6.A: Wake simulation on non-empty GraphDiff
   wakeSimulation(): void {
     if (this.d3Simulation) {
       this.d3Simulation.alpha(0.3).restart();
     }
   }
 
-  // F2: Camera spring fly-to a specific node
   flyToNode(nodeId: string): void {
     const pos = this.nodePositions.get(nodeId);
     if (!pos) return;
@@ -296,12 +258,10 @@ export class CanvasRenderer {
     this.userInteracted = true;
   }
 
-  // F2: Set highlighted node IDs for search results
   setHighlightedNodes(ids: Set<string>): void {
     this.highlightedNodes = ids;
   }
 
-  // F5: Pre-render label to offscreen canvas, cache by text
   private getLabelImage(text: string): { img: HTMLCanvasElement; w: number; h: number } {
     const cached = this.labelCache.get(text);
     if (cached) return cached;
@@ -338,7 +298,6 @@ export class CanvasRenderer {
   }
 
   private bindEvents(): void {
-    // F1: mousedown — check node hit first for drag, else canvas pan
     this.canvas.addEventListener('mousedown', (e) => {
       const hit = this.findNodeAt(e.clientX, e.clientY);
       if (hit) {
@@ -357,7 +316,6 @@ export class CanvasRenderer {
       }
     });
 
-    // F1: mousemove — node drag takes priority over canvas pan
     window.addEventListener('mousemove', (e) => {
       if (this.draggedNode) {
         const rect = this.canvas.getBoundingClientRect();
@@ -380,7 +338,6 @@ export class CanvasRenderer {
       }
     });
 
-    // F1: mouseup — finalize node drag (pin) or canvas pan
     window.addEventListener('mouseup', () => {
       if (this.draggedNode) {
         if (this.didDrag) {
@@ -394,7 +351,6 @@ export class CanvasRenderer {
       this.canvas.style.cursor = 'grab';
     });
 
-    // F1: dblclick — unpin node
     this.canvas.addEventListener('dblclick', (e) => {
       const hit = this.findNodeAt(e.clientX, e.clientY);
       if (hit && this.pinnedNodes.has(hit.id)) {
@@ -415,7 +371,6 @@ export class CanvasRenderer {
       this.camera.targetZoom = Math.max(0.1, Math.min(5, this.camera.targetZoom * factor));
     });
 
-    // F1: click — suppress after drag
     this.canvas.addEventListener('click', (e) => {
       if (this.suppressNextClick) { this.suppressNextClick = false; return; }
       const node = this.findNodeAt(e.clientX, e.clientY);
@@ -440,15 +395,12 @@ export class CanvasRenderer {
       const dy = y - pos.y;
       const size = (this.nodeSizes.get(id) ?? 6) + 3;
       if (dx * dx + dy * dy < size * size) {
-        // Return the real node so the sidebar gets its source_file/metadata/etc.
-        // Fall back to a stub only if the lookup is somehow stale.
         return this.nodeById.get(id) ?? ({ id, label: id, file_type: 'code', source_file: '' } as GraphNode);
       }
     }
     return null;
   }
 
-  // §6.D: findEdgeAt iterates over ALL edge types, respecting visibility filters
   private findEdgeAt(clientX: number, clientY: number): GraphEdge | null {
     if (this.camera.zoom < 0.3) return null;
 
@@ -483,14 +435,7 @@ export class CanvasRenderer {
     return closestEdge;
   }
 
-  // §5.5 Spring damping: F = -k·Δx − c·v; v += F; x += v
   private updateCamera(dtMs: number = 16.67): void {
-    // Clamp the timestep. A backgrounded tab (rAF throttled), a GC pause, or a
-    // heavy rebuildSimulation on a large graph diff can hand us a multi-hundred-ms
-    // frame. This semi-implicit Euler spring is only stable for dt ≲ 3 — an
-    // unclamped spike multiplies the force ~100×, sends velocity to Infinity,
-    // turns the camera coords into NaN, and ctx.translate(NaN) blanks the canvas
-    // permanently. Capping at ~2 frames keeps a stall to a single normal step.
     const dt = Math.min(dtMs, 33.34) / 16.67;
     const forceX = (-this.STIFFNESS * (this.camera.x - this.camera.targetX) - this.DAMPING * this.camera.vx) * dt;
     const forceY = (-this.STIFFNESS * (this.camera.y - this.camera.targetY) - this.DAMPING * this.camera.vy) * dt;
@@ -503,7 +448,6 @@ export class CanvasRenderer {
     this.camera.y += this.camera.vy;
     this.camera.zoom += forceZoom;
 
-    // F4: Camera convergence snap — avoid infinite micro-oscillation
     if (Math.abs(this.camera.vx) < 0.01 && Math.abs(this.camera.vy) < 0.01) {
       this.camera.x = this.camera.targetX;
       this.camera.y = this.camera.targetY;
@@ -511,8 +455,6 @@ export class CanvasRenderer {
       this.camera.vy = 0;
     }
 
-    // Safety net: should any input ever still drive the camera non-finite, snap
-    // back to a sane state instead of rendering an invisible NaN-translated scene.
     if (
       !Number.isFinite(this.camera.x) || !Number.isFinite(this.camera.y) ||
       !Number.isFinite(this.camera.zoom) || !Number.isFinite(this.camera.vx) ||
@@ -593,8 +535,6 @@ export class CanvasRenderer {
     const dtMs = options.dtMs ?? 16.67;
     this.updateCamera(dtMs);
 
-    // F4: Frame-skip fingerprint — must be AFTER updateCamera so camera.x reflects
-    // the current frame's spring progress, preventing fly-to from being skipped.
     const dataChanged = nodes !== this.lastNodes || edges !== this.lastEdges;
     if (nodes !== this.lastNodes) {
       this.nodeById = new Map(nodes.map((n) => [n.id, n]));
@@ -714,7 +654,6 @@ export class CanvasRenderer {
       const isHub = hubNodes.has(node.id);
       if (zoom < 0.3 && !isHub) continue;
 
-      // F2: Highlighted nodes ignore focus-mode alpha decay
       const isHighlighted = this.highlightedNodes.has(node.id);
       const inFocus =
         activeId == null || node.id === activeId || (focusNeighbors?.has(node.id) ?? false);
@@ -746,7 +685,6 @@ export class CanvasRenderer {
       ctx.fill();
       ctx.shadowBlur = 0;
 
-      // F1: Pin indicator — small white outer ring for pinned nodes
       if (this.pinnedNodes.has(node.id)) {
         ctx.beginPath();
         ctx.arc(pos.x, pos.y, size + 4, 0, Math.PI * 2);
@@ -755,12 +693,10 @@ export class CanvasRenderer {
         ctx.stroke();
       }
 
-      // Label LOD
       const labelByFocus = activeId != null && inFocus;
       const isProminent = isHub || size >= 9;
       if (labelByFocus || zoom >= 1.4 || (zoom >= 0.45 && isProminent)) {
         const label = node.label || node.id;
-        // F5: Use label cache with fixed font size, scale via drawImage
         const { img, w: lw, h: lh } = this.getLabelImage(label);
         const targetPx = Math.max(9, 11 / Math.max(0.5, zoom));
         const s = targetPx / CanvasRenderer.LABEL_FONT_PX;
@@ -773,7 +709,6 @@ export class CanvasRenderer {
 
     ctx.restore();
 
-    // HUD status bar
     ctx.fillStyle = 'rgba(13, 17, 23, 0.8)';
     ctx.fillRect(8, h - 30, 250, 22);
     ctx.fillStyle = '#8b949e';

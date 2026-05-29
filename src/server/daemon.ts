@@ -14,16 +14,10 @@ const FILE_THRESHOLD = 500;
 const WORD_THRESHOLD = 2_000_000;
 
 async function launchHUD(port: number, token: string): Promise<void> {
-  // DISPLAY / WAYLAND_DISPLAY are X11/Wayland signals — only meaningful on Linux.
-  // macOS (Quartz) and Windows (Win32) never set DISPLAY, so checking it there
-  // misclassifies normal terminal sessions as headless.
   const isLinuxNoDisplay =
     process.platform === 'linux' &&
     !process.env.DISPLAY &&
     !process.env.WAYLAND_DISPLAY;
-  // Agent-driven sweeps (the proactive bootstrap flow in SKILL.md) launch the
-  // daemon in the background and poll /api/health. Auto-opening the user's
-  // browser there is unwanted noise, so honor an explicit suppress signal.
   const suppressOpen =
     process.argv.includes('--no-open') || process.env.REPOSCAPE_NO_OPEN === '1';
   const isHeadless =
@@ -31,7 +25,6 @@ async function launchHUD(port: number, token: string): Promise<void> {
     process.env.CI === 'true' ||
     !!process.env.SSH_CLIENT ||
     isLinuxNoDisplay;
-  // In development mode (npm run dev), the backend runs on 5174 while Vite serves HUD on 5173
   const hudPort = port === 5174 ? 5173 : port;
   const hudUrl = `http://localhost:${hudPort}/hud.html?token=${encodeURIComponent(token)}`;
 
@@ -52,10 +45,6 @@ async function launchHUD(port: number, token: string): Promise<void> {
   }
 }
 
-// Probe whether something already accepts connections on the port. Used as an
-// early guard so a second launch never deletes a live instance's session token
-// (unlinkStaleToken) and then crashes on EADDRINUSE, leaving the running daemon
-// authless.
 function isPortInUse(port: number, host = '127.0.0.1'): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = net.createConnection({ port, host });
@@ -70,12 +59,10 @@ function isPortInUse(port: number, host = '127.0.0.1'): Promise<boolean> {
   });
 }
 
-// §3: Count source files and estimate word count
 async function measureProjectSize(sourceFiles: string[]): Promise<{ fileCount: number; wordCount: number }> {
   const fileCount = sourceFiles.length;
   let wordCount = 0;
 
-  // Sample up to 100 files for word estimate
   const sampleSize = Math.min(100, fileCount);
   const step = Math.max(1, Math.floor(fileCount / sampleSize));
   let sampledWords = 0;
@@ -87,7 +74,6 @@ async function measureProjectSize(sourceFiles: string[]): Promise<{ fileCount: n
       sampledWords += content.split(/\s+/).length;
       sampledCount++;
     } catch {
-      // skip unreadable files
     }
   }
 
@@ -98,7 +84,6 @@ async function measureProjectSize(sourceFiles: string[]): Promise<{ fileCount: n
   return { fileCount, wordCount };
 }
 
-// §3: Get top-level subdirectory file counts
 async function getTopSubdirs(projectRoot: string, sourceFiles: string[]): Promise<{ name: string; count: number }[]> {
   const counts = new Map<string, number>();
   for (const file of sourceFiles) {
@@ -112,7 +97,6 @@ async function getTopSubdirs(projectRoot: string, sourceFiles: string[]): Promis
     .slice(0, 5);
 }
 
-// §3: Prompt user for input
 async function promptInput(message: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   return new Promise((resolve) => {
@@ -123,7 +107,6 @@ async function promptInput(message: string): Promise<string> {
   });
 }
 
-// §3: Project size guard with interactive scope selection
 async function projectSizeGuard(
   compiler: any,
   projectRoot: string
@@ -183,7 +166,6 @@ async function projectSizeGuard(
       return { proceed: true, scopeRoot };
     }
 
-    // Check if user typed a directory name directly
     const typedDir = path.resolve(projectRoot, answer);
     try {
       const stat = await fs.stat(typedDir);
@@ -192,14 +174,12 @@ async function projectSizeGuard(
         return { proceed: true, scopeRoot: typedDir };
       }
     } catch {
-      // not a valid directory
     }
 
     console.log('\n  Invalid selection. Scanning cancelled.');
     return { proceed: false };
   }
 
-  // Non-interactive: auto-scope to top subdir with warning
   if (topSubdirs.length > 0) {
     const scopeRoot = path.join(projectRoot, topSubdirs[0].name);
     console.warn(`  Non-interactive mode: auto-scoping to ${topSubdirs[0].name}/. Use --force to override.`);
@@ -214,9 +194,6 @@ async function main(): Promise<void> {
   const projectRoot = process.cwd();
   const port = parseInt(process.env.REPOSCAPE_PORT || '5173', 10);
 
-  // Refuse to start a second instance BEFORE touching the token file. Doing this
-  // first means a double-launch (or any process squatting on the port) fails
-  // cleanly instead of clobbering a running daemon's session token.
   if (await isPortInUse(port)) {
     console.error(
       `RepoScape (or another process) is already using port ${port}. ` +
@@ -231,7 +208,6 @@ async function main(): Promise<void> {
   const { HUDWebSocketServer } = await import('./websocket.js');
   const { FileWatcher } = await import('./watcher.js');
 
-  // §4.C: Unlink stale token before project size guard
   await unlinkStaleToken(projectRoot);
 
   const compiler = new GraphCompiler(projectRoot);
@@ -242,7 +218,6 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // §1.B: Startup self-check — abort if parser not ready
   try {
     compiler.assertParserReady();
   } catch (err: any) {
@@ -250,18 +225,14 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // §3: Project size guard — BEFORE generating token
-  // §4.C: "On guard proceed: false, no token is generated and daemon.ts exits 0. Disk is clean."
   const guardResult = await projectSizeGuard(compiler, projectRoot);
   if (!guardResult.proceed) {
     process.exit(0);
   }
 
-  // §4.C: Generate token only on proceed: true
   const token = await generateSessionToken(projectRoot);
   console.log(`Session token saved to .reposcape/.session-token`);
 
-  // §3: Apply scope to compiler and watcher
   if (guardResult.scopeRoot) {
     compiler.setScopeRoot(guardResult.scopeRoot);
   }
@@ -287,7 +258,6 @@ async function main(): Promise<void> {
       }
     }));
   } catch {
-    // No static dir in dev mode
   }
 
   const { router, cleanup } = createRoutes(projectRoot, compiler, (diff) => {
@@ -308,7 +278,6 @@ async function main(): Promise<void> {
   const watcher = new FileWatcher(projectRoot, compiler, (diff) => {
     wsServer.broadcastDiff(diff);
   }, guardResult.scopeRoot || undefined, (changedFiles) => {
-    // Light up edited files' nodes (§2C focus glow, 60s TTL on the client).
     for (const file of changedFiles) {
       wsServer.broadcastFocus({ file, activity: 'edited' });
     }
@@ -316,8 +285,6 @@ async function main(): Promise<void> {
   watcher.start();
 
   server.on('error', (err: NodeJS.ErrnoException) => {
-    // The early isPortInUse() guard handles the common case; this catches the
-    // narrow race where the port is grabbed between the probe and listen().
     if (err.code === 'EADDRINUSE') {
       console.error(`Port ${port} is already in use. Shutting down.`);
     } else {

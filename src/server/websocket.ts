@@ -41,7 +41,6 @@ export class HUDWebSocketServer {
             ws.send(JSON.stringify({ type: 'pong' }));
           }
         } catch {
-          // ignore malformed messages
         }
       });
 

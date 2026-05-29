@@ -55,7 +55,6 @@ export class FileWatcher {
     });
   }
 
-  // §3.C: Record intent only — no direct handleFileDelete calls
   private handleEvent(event: string, filePath: string): void {
     const relativePath = path.relative(this.projectRoot, filePath).replace(/\\/g, '/');
 
@@ -72,7 +71,6 @@ export class FileWatcher {
     this.debounceTimer = setTimeout(() => this.flushChanges(), 100);
   }
 
-  // §3.A: Use compileAndDiff() — atomic snapshot-compile-diff in a single transaction
   private async flushChanges(): Promise<void> {
     const changes = new Set(this.pendingChanges);
     const deletes = new Set(this.pendingDeletes);
@@ -82,10 +80,8 @@ export class FileWatcher {
     if (changes.size === 0 && deletes.size === 0) return;
 
     try {
-      // §3.A: Atomic — compiler handles snapshot, compile, and diff in one transaction
       const { diff, graph } = await this.compiler.compileAndDiff();
 
-      // §4: Include hubNodes in diff
       const hubNodes = Array.from(this.compiler.getHubNodes());
 
       this.onGraphUpdate({
@@ -93,9 +89,6 @@ export class FileWatcher {
         hubNodes,
       });
 
-      // Highlight the nodes for files that were just edited (not deletes —
-      // their nodes are gone). source_file uses the same project-relative,
-      // forward-slashed form as `changes`, so these match directly.
       if (this.onFocus && changes.size > 0) {
         this.onFocus(Array.from(changes));
       }

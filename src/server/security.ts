@@ -6,13 +6,11 @@ import { CognitiveChunk } from './types.js';
 
 let sessionToken = '';
 
-// §4.C: Unlink stale token from prior aborted run
 export async function unlinkStaleToken(projectRoot: string): Promise<void> {
   const tokenPath = path.join(projectRoot, '.reposcape', '.session-token');
   try {
     await fs.unlink(tokenPath);
   } catch {
-    // No stale token — fine
   }
 }
 
@@ -65,7 +63,6 @@ export async function sandboxPath(targetPath: string, projectRoot: string): Prom
 
   const isOutside = relative.startsWith('..') || path.isAbsolute(relative);
   if (isOutside) {
-    // §7.A: Don't echo user-supplied input — log stable identifier only
     const inputHash = crypto.createHash('sha256').update(targetPath).digest('hex').slice(0, 12);
     throw new Error(
       `Security Violation: Path is outside the sandbox root jail [${inputHash}] (resolves to: ${resolved})`
