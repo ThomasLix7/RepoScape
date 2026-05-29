@@ -15,10 +15,11 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://localhost:5174',
+      '/api': 'http://127.0.0.1:5174',
       '/ws': {
-        target: 'ws://localhost:5174',
+        target: 'ws://127.0.0.1:5174',
         ws: true,
+        changeOrigin: true,
       },
     },
   },

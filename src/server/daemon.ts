@@ -13,9 +13,18 @@ const FILE_THRESHOLD = 500;
 const WORD_THRESHOLD = 2_000_000;
 
 async function launchHUD(port: number, token: string): Promise<void> {
+  // DISPLAY / WAYLAND_DISPLAY are X11/Wayland signals — only meaningful on Linux.
+  // macOS (Quartz) and Windows (Win32) never set DISPLAY, so checking it there
+  // misclassifies normal terminal sessions as headless.
+  const isLinuxNoDisplay =
+    process.platform === 'linux' &&
+    !process.env.DISPLAY &&
+    !process.env.WAYLAND_DISPLAY;
   const isHeadless =
-    process.env.CI === 'true' || !process.env.DISPLAY || !!process.env.SSH_CLIENT;
-  const hudUrl = `http://127.0.0.1:${port}/hud.html?token=${encodeURIComponent(token)}`;
+    process.env.CI === 'true' || !!process.env.SSH_CLIENT || isLinuxNoDisplay;
+  // In development mode (npm run dev), the backend runs on 5174 while Vite serves HUD on 5173
+  const hudPort = port === 5174 ? 5173 : port;
+  const hudUrl = `http://localhost:${hudPort}/hud.html?token=${encodeURIComponent(token)}`;
 
   if (isHeadless) {
     console.log(`\n🚀 HUD Server listening at ${hudUrl}`);
@@ -232,7 +241,13 @@ async function main(): Promise<void> {
   const staticDir = path.join(__dirname, '..', 'hud');
   try {
     await fs.access(staticDir);
-    app.use(express.static(staticDir));
+    app.use(express.static(staticDir, {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.js')) {
+          res.setHeader('Content-Type', 'application/javascript');
+        }
+      }
+    }));
   } catch {
     // No static dir in dev mode
   }
@@ -257,7 +272,7 @@ async function main(): Promise<void> {
   }, guardResult.scopeRoot || undefined);
   watcher.start();
 
-  server.listen(port, () => {
+  server.listen(port, '127.0.0.1', () => {
     launchHUD(port, token);
   });
 
