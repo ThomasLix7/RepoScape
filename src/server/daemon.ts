@@ -2,6 +2,7 @@
 
 import express from 'express';
 import { createServer } from 'http';
+import net from 'net';
 import path from 'path';
 import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
@@ -20,8 +21,16 @@ async function launchHUD(port: number, token: string): Promise<void> {
     process.platform === 'linux' &&
     !process.env.DISPLAY &&
     !process.env.WAYLAND_DISPLAY;
+  // Agent-driven sweeps (the proactive bootstrap flow in SKILL.md) launch the
+  // daemon in the background and poll /api/health. Auto-opening the user's
+  // browser there is unwanted noise, so honor an explicit suppress signal.
+  const suppressOpen =
+    process.argv.includes('--no-open') || process.env.REPOSCAPE_NO_OPEN === '1';
   const isHeadless =
-    process.env.CI === 'true' || !!process.env.SSH_CLIENT || isLinuxNoDisplay;
+    suppressOpen ||
+    process.env.CI === 'true' ||
+    !!process.env.SSH_CLIENT ||
+    isLinuxNoDisplay;
   // In development mode (npm run dev), the backend runs on 5174 while Vite serves HUD on 5173
   const hudPort = port === 5174 ? 5173 : port;
   const hudUrl = `http://localhost:${hudPort}/hud.html?token=${encodeURIComponent(token)}`;
@@ -41,6 +50,24 @@ async function launchHUD(port: number, token: string): Promise<void> {
       );
     }
   }
+}
+
+// Probe whether something already accepts connections on the port. Used as an
+// early guard so a second launch never deletes a live instance's session token
+// (unlinkStaleToken) and then crashes on EADDRINUSE, leaving the running daemon
+// authless.
+function isPortInUse(port: number, host = '127.0.0.1'): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ port, host });
+    const done = (inUse: boolean) => {
+      socket.destroy();
+      resolve(inUse);
+    };
+    socket.setTimeout(500);
+    socket.once('connect', () => done(true));
+    socket.once('timeout', () => done(false));
+    socket.once('error', () => done(false));
+  });
 }
 
 // §3: Count source files and estimate word count
@@ -187,6 +214,17 @@ async function main(): Promise<void> {
   const projectRoot = process.cwd();
   const port = parseInt(process.env.REPOSCAPE_PORT || '5173', 10);
 
+  // Refuse to start a second instance BEFORE touching the token file. Doing this
+  // first means a double-launch (or any process squatting on the port) fails
+  // cleanly instead of clobbering a running daemon's session token.
+  if (await isPortInUse(port)) {
+    console.error(
+      `RepoScape (or another process) is already using port ${port}. ` +
+        `Not starting a second instance. If this is a stale process, stop it first.`
+    );
+    process.exit(1);
+  }
+
   const { generateSessionToken, unlinkStaleToken } = await import('./security.js');
   const { GraphCompiler } = await import('./compiler.js');
   const { createRoutes } = await import('./routes.js');
@@ -276,6 +314,17 @@ async function main(): Promise<void> {
     }
   });
   watcher.start();
+
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    // The early isPortInUse() guard handles the common case; this catches the
+    // narrow race where the port is grabbed between the probe and listen().
+    if (err.code === 'EADDRINUSE') {
+      console.error(`Port ${port} is already in use. Shutting down.`);
+    } else {
+      console.error(`Server error: ${err.message}`);
+    }
+    process.exit(1);
+  });
 
   server.listen(port, '127.0.0.1', () => {
     launchHUD(port, token);

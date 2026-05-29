@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "reposcape": {
+      "source": "/Users/lihongtao/RepoScape",
+      "sourceType": "local",
+      "computedHash": "725a1d8ff3d7cc82f5107f9aef44514e513698a0c00902e4a14ed181ebabdc09"
+    }
+  }
+}

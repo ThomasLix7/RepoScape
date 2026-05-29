@@ -80,6 +80,9 @@ export class CanvasRenderer {
   private frameSkipCount = 0;
   private lastNodes: GraphNode[] | null = null;
   private lastEdges: GraphEdge[] | null = null;
+  // Lookup of the live, fully-parsed node objects so hit-testing can return the
+  // real node (with source_file/metadata/community) instead of a stripped stub.
+  private nodeById = new Map<string, GraphNode>();
 
   // F5: Label texture cache
   private labelCache = new Map<string, { img: HTMLCanvasElement; w: number; h: number }>();
@@ -437,7 +440,9 @@ export class CanvasRenderer {
       const dy = y - pos.y;
       const size = (this.nodeSizes.get(id) ?? 6) + 3;
       if (dx * dx + dy * dy < size * size) {
-        return { id, label: id, file_type: 'code', source_file: '' } as GraphNode;
+        // Return the real node so the sidebar gets its source_file/metadata/etc.
+        // Fall back to a stub only if the lookup is somehow stale.
+        return this.nodeById.get(id) ?? ({ id, label: id, file_type: 'code', source_file: '' } as GraphNode);
       }
     }
     return null;
@@ -480,7 +485,13 @@ export class CanvasRenderer {
 
   // §5.5 Spring damping: F = -k·Δx − c·v; v += F; x += v
   private updateCamera(dtMs: number = 16.67): void {
-    const dt = dtMs / 16.67;
+    // Clamp the timestep. A backgrounded tab (rAF throttled), a GC pause, or a
+    // heavy rebuildSimulation on a large graph diff can hand us a multi-hundred-ms
+    // frame. This semi-implicit Euler spring is only stable for dt ≲ 3 — an
+    // unclamped spike multiplies the force ~100×, sends velocity to Infinity,
+    // turns the camera coords into NaN, and ctx.translate(NaN) blanks the canvas
+    // permanently. Capping at ~2 frames keeps a stall to a single normal step.
+    const dt = Math.min(dtMs, 33.34) / 16.67;
     const forceX = (-this.STIFFNESS * (this.camera.x - this.camera.targetX) - this.DAMPING * this.camera.vx) * dt;
     const forceY = (-this.STIFFNESS * (this.camera.y - this.camera.targetY) - this.DAMPING * this.camera.vy) * dt;
     const forceZoom = -this.STIFFNESS * (this.camera.zoom - this.camera.targetZoom) * dt;
@@ -496,6 +507,20 @@ export class CanvasRenderer {
     if (Math.abs(this.camera.vx) < 0.01 && Math.abs(this.camera.vy) < 0.01) {
       this.camera.x = this.camera.targetX;
       this.camera.y = this.camera.targetY;
+      this.camera.vx = 0;
+      this.camera.vy = 0;
+    }
+
+    // Safety net: should any input ever still drive the camera non-finite, snap
+    // back to a sane state instead of rendering an invisible NaN-translated scene.
+    if (
+      !Number.isFinite(this.camera.x) || !Number.isFinite(this.camera.y) ||
+      !Number.isFinite(this.camera.zoom) || !Number.isFinite(this.camera.vx) ||
+      !Number.isFinite(this.camera.vy)
+    ) {
+      this.camera.x = Number.isFinite(this.camera.targetX) ? this.camera.targetX : 0;
+      this.camera.y = Number.isFinite(this.camera.targetY) ? this.camera.targetY : 0;
+      this.camera.zoom = Number.isFinite(this.camera.targetZoom) ? this.camera.targetZoom : 1;
       this.camera.vx = 0;
       this.camera.vy = 0;
     }
@@ -571,6 +596,9 @@ export class CanvasRenderer {
     // F4: Frame-skip fingerprint — must be AFTER updateCamera so camera.x reflects
     // the current frame's spring progress, preventing fly-to from being skipped.
     const dataChanged = nodes !== this.lastNodes || edges !== this.lastEdges;
+    if (nodes !== this.lastNodes) {
+      this.nodeById = new Map(nodes.map((n) => [n.id, n]));
+    }
     this.lastNodes = nodes;
     this.lastEdges = edges;
 

@@ -11,14 +11,35 @@ Do not manually send high-frequency focus or activity events for every file read
 
 ## Execution Guard
 
-Before making any optional RepoScape HTTP call:
+Before making any optional RepoScape HTTP call, run this three-state diagnosis. `/api/health` is auth-gated, so you always read the token first; the **distinction between a refused connection and a 401 is what tells you whether to launch** — never relaunch a daemon that is already running.
 
-1. Confirm `.reposcape/.session-token` exists in the project root.
-2. Read the token once.
-3. Call `GET http://localhost:5173/api/health` with `Authorization: Bearer <token>`.
-4. If any step fails, skip RepoScape synchronization and continue normal offline work.
+1. Read `.reposcape/.session-token` from the project root (it may be absent or stale).
+2. Call `GET http://localhost:5173/api/health` with `Authorization: Bearer <token>` and branch on the result:
+   - **`200 OK`** → the daemon is already running. Proceed; do **not** launch anything.
+   - **`401`** → a daemon is running but your token is stale (the token rotates on every launch). Re-read the token file and retry once. If it still 401s, stop with an auth error — do **not** launch a second instance.
+   - **Connection refused / unreachable** (this returns immediately — it is *not* a timeout, so do not wait it out) → the daemon is genuinely offline. Handle per request type below.
+
+When the daemon is offline:
+
+- **Passive questions (e.g., general architecture explanations)**: gracefully skip RepoScape synchronization, note it briefly at the end of your response, and continue with normal offline work using standard file-reading and grep tools.
+- **Active `/reposcape` sweeps or explicit HUD analysis**: do NOT abort. Bootstrap the daemon following **Daemon Bootstrap** below, then resume.
 
 Never let RepoScape telemetry calls block the requested coding task.
+
+### Daemon Bootstrap
+
+Bring the daemon up, then resume. Every step is non-interactive on purpose — a bare interactive launch can hang on the project-size prompt and never write a token.
+
+1. **Pick the launch command** (first that applies):
+   - `reposcape` — if it resolves on `PATH` (the daemon is installed globally; the normal case).
+   - `npm install -g reposcape` then `reposcape` — only if `reposcape` is missing. Propose this install to the user and run it only on approval. *(Until the package is published to npm this will fail; if so, fall through.)*
+   - Otherwise stop with: *"The RepoScape daemon is not installed and could not be auto-installed. Install it with `npm i -g reposcape` (during local development of RepoScape itself: run `npm link` inside the repo), then re-run."*
+2. **Propose and launch** in the background, non-interactively. Tell the user: *"The RepoScape daemon is offline. With your approval I'll start it in the background so we can proceed."* Then run the chosen command with:
+   - `--scope <dir>` — the directory relevant to this task. This skips the interactive size prompt on large repos; pass `--force` instead only if the user explicitly wants the whole repo compiled.
+   - `--no-open` — so the sweep does not pop open the user's browser.
+   - Launch it as a background / detached task so the terminal does not lock up.
+3. **Poll, don't sleep.** After launching, poll `GET /api/health` (re-reading the token file each time — it is rewritten on startup) about once a second, up to ~60s. Resume the moment it returns `200 OK`: that response means the initial graph is already compiled and queryable. Also watch the launched process — if it exits early (port in use, missing build, etc.), stop immediately and surface its output instead of waiting out the timeout.
+4. **Give up cleanly** only if the user rejects the launch, the command can't be found or installed, the process exits with an error, or the poll times out. Report the daemon's output in that case.
 
 ## Responsibility Boundary
 
@@ -58,7 +79,7 @@ Follow these steps in order. Do not skip steps.
 
 ### Step 1 — Guard and load the live graph
 
-Run the Execution Guard above. If it passes, `GET http://localhost:5173/api/graph` (with the bearer token) and keep the result — you need its physical nodes to resolve edge targets in Step 4. If the guard fails, stop: there is nothing to ingest into.
+Run the Execution Guard above. Because this is an active sweep, an offline daemon means **Daemon Bootstrap**, not abort — start it and wait for health before continuing. Once health passes, `GET http://localhost:5173/api/graph` (with the bearer token) and keep the result — you need its physical nodes to resolve edge targets in Step 4. Stop only if the bootstrap itself fails (user declines, not installed, or it never comes up).
 
 ### Step 2 — Decide scope
 

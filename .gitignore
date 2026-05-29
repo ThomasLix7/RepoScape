@@ -95,3 +95,7 @@ out/
 # Documentation
 docs/
 
+# IDE/Tool overrides
+.claude/
+.opencode/
+
