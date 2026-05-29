@@ -68,6 +68,7 @@ export interface ExtractionResult {
   rawExports: RawExportEntry[];
   rawImports: RawImportEntry[];
   defaultExportNodeId?: string;
+  diagnostics?: string[];
 }
 
 export interface LanguageStrategy {

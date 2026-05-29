@@ -93,6 +93,10 @@ export class GraphCompiler {
   private fileBindings: Map<string, Map<string, { file: string; symbol: string }>> = new Map();
   // §2.D: defaultExports index — file → nodeId
   private defaultExports: Map<string, string> = new Map();
+  // §2.D: Stored rawImports for test introspection
+  private storedRawImports: { caller: string; entry: RawImportEntry }[] = [];
+  // Cached file→nodeId map for O(1) lookups
+  private fileNodeIdCache: Map<string, string> = new Map();
   // §1B: Persistent dependency caches — survive across compile runs
   private fileExportsCache: Map<string, Map<string, string | { sourceFile: string; originalSymbol: string } | string[]>> = new Map();
   private isFirstCompile = true;
@@ -121,20 +125,21 @@ export class GraphCompiler {
     if (langCount === 0) {
       throw new Error('FATAL: No language grammars loaded');
     }
-    // Grammar-bound smoke test
+    // §1.B: Grammar-bound smoke test — MUST run. Missing TS grammar is fatal.
     const tsLang = ParserRegistry.getLanguage('.ts');
-    if (tsLang) {
-      this.parser.setLanguage(tsLang);
-      const tree = this.parser.parse('const x = 1;');
-      if (!tree || !tree.rootNode) {
-        throw new Error('FATAL: Parser smoke test failed — null tree');
-      }
-      const firstNamed = tree.rootNode.namedChildren[0];
-      if (!firstNamed || firstNamed.type !== 'lexical_declaration') {
-        throw new Error(
-          `FATAL: Parser smoke test failed — expected 'lexical_declaration', got '${firstNamed?.type}'`
-        );
-      }
+    if (!tsLang) {
+      throw new Error('FATAL: TypeScript grammar not loaded — smoke test cannot run');
+    }
+    this.parser.setLanguage(tsLang);
+    const tree = this.parser.parse('const x = 1;');
+    if (!tree || !tree.rootNode) {
+      throw new Error('FATAL: Parser smoke test failed — null tree');
+    }
+    const firstNamed = tree.rootNode.namedChildren[0];
+    if (!firstNamed || firstNamed.type !== 'lexical_declaration') {
+      throw new Error(
+        `FATAL: Parser smoke test failed — expected 'lexical_declaration', got '${firstNamed?.type}'`
+      );
     }
   }
 
@@ -421,6 +426,7 @@ export class GraphCompiler {
 
     // §2.D: Resolution pass — runs after all files parsed and exports cache populated
     await this.resolveImports(allRawImports);
+    this.storedRawImports = allRawImports;
 
     // §5.B: Call-graph resolution using fileBindings
     this.resolveCallGraph();
@@ -533,6 +539,13 @@ export class GraphCompiler {
 
     this.rawCalls.push(...result.rawCalls);
 
+    // §2.A: Log parser diagnostics through the compiler (which has projectRoot)
+    if (result.diagnostics) {
+      for (const diag of result.diagnostics) {
+        await appendErrorLog(this.projectRoot, diag);
+      }
+    }
+
     // §2.A: Collect rawImports for resolution pass
     for (const entry of result.rawImports) {
       allRawImports.push({ caller: relativePath, entry });
@@ -616,20 +629,20 @@ export class GraphCompiler {
         case 'namespace':
           edgeTargetFile = targetFile;
           if (!this.fileBindings.has(caller)) this.fileBindings.set(caller, new Map());
-          this.fileBindings.get(caller)!.set(entry.localName, { file: targetFile, symbol: '*' });
+          this.fileBindings.get(caller)!.set(entry.localName.toLowerCase(), { file: targetFile, symbol: '*' });
           break;
         case 'default': {
           const resolved = unwrapReexports('default', targetFile, this.fileExportsCache);
           edgeTargetFile = resolved.filePath;
           if (!this.fileBindings.has(caller)) this.fileBindings.set(caller, new Map());
-          this.fileBindings.get(caller)!.set(entry.localName, { file: resolved.filePath, symbol: resolved.symbol });
+          this.fileBindings.get(caller)!.set(entry.localName.toLowerCase(), { file: resolved.filePath, symbol: resolved.symbol });
           break;
         }
         case 'named': {
           const resolved = unwrapReexports(entry.importedName, targetFile, this.fileExportsCache);
           edgeTargetFile = resolved.filePath;
           if (!this.fileBindings.has(caller)) this.fileBindings.set(caller, new Map());
-          this.fileBindings.get(caller)!.set(entry.localName, { file: resolved.filePath, symbol: resolved.symbol });
+          this.fileBindings.get(caller)!.set(entry.localName.toLowerCase(), { file: resolved.filePath, symbol: resolved.symbol });
           break;
         }
       }
@@ -650,10 +663,15 @@ export class GraphCompiler {
     }
   }
 
-  // Helper: find the file-level node for a given source_file path
+  // Helper: find the file-level node for a given source_file path (cached for O(1))
   private findFileNodeId(sourceFile: string): string | undefined {
+    // Check cache first
+    const cached = this.fileNodeIdCache.get(sourceFile);
+    if (cached && this.nodes.has(cached)) return cached;
+    // Fallback: scan and cache
     for (const [id, node] of this.nodes.entries()) {
       if (node.source_file === sourceFile && !node.source_location) {
+        this.fileNodeIdCache.set(sourceFile, id);
         return id;
       }
     }
@@ -732,6 +750,27 @@ export class GraphCompiler {
             }
             continue;
           }
+          // §5.B: ns is NOT a namespace binding — skip steps 1-2, go to step 4 (global)
+          const memberName = member;
+          const memberKey = memberName.toLowerCase();
+          if (!GENERIC_LABELS.has(memberKey) && globalLabelFreq.get(memberKey) === 1) {
+            const targetId = globalLabelToId.get(memberKey)!;
+            if (targetId !== call.caller_nid) {
+              const edgeId = `${call.caller_nid}->${targetId}_calls`;
+              if (!this.edges.has(edgeId)) {
+                this.edges.set(edgeId, {
+                  source: call.caller_nid,
+                  target: targetId,
+                  relation: 'calls',
+                  type: 'PHYSICAL',
+                  score: 0.8,
+                  source_file: callerFile,
+                  source_location: call.source_location,
+                });
+              }
+            }
+          }
+          continue;
         }
         // Fall through for non-namespace member calls
         const memberName = calleeName.split('.').pop()!;
@@ -1123,5 +1162,13 @@ export class GraphCompiler {
 
   getModuleResolver(): ModuleResolver {
     return this.moduleResolver;
+  }
+
+  getRawImports(): { caller: string; entry: RawImportEntry }[] {
+    return this.storedRawImports;
+  }
+
+  getFileExportsCache(): Map<string, Map<string, string | { sourceFile: string; originalSymbol: string } | string[]>> {
+    return this.fileExportsCache;
   }
 }
