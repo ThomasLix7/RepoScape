@@ -750,26 +750,10 @@ export class GraphCompiler {
             }
             continue;
           }
-          // §5.B: ns is NOT a namespace binding — skip steps 1-2, go to step 4 (global)
-          const memberName = member;
-          const memberKey = memberName.toLowerCase();
-          if (!GENERIC_LABELS.has(memberKey) && globalLabelFreq.get(memberKey) === 1) {
-            const targetId = globalLabelToId.get(memberKey)!;
-            if (targetId !== call.caller_nid) {
-              const edgeId = `${call.caller_nid}->${targetId}_calls`;
-              if (!this.edges.has(edgeId)) {
-                this.edges.set(edgeId, {
-                  source: call.caller_nid,
-                  target: targetId,
-                  relation: 'calls',
-                  type: 'PHYSICAL',
-                  score: 0.8,
-                  source_file: callerFile,
-                  source_location: call.source_location,
-                });
-              }
-            }
-          }
+          // ns is not a known namespace binding — receiver type is unknown.
+          // Unique-global fallback is unsafe for member calls in dynamic JS/TS:
+          // socket.connect() / db.connect() / client.connect() would all collapse
+          // onto a lone global `connect`. Leave unresolved.
           continue;
         }
         // Fall through for non-namespace member calls
@@ -820,24 +804,9 @@ export class GraphCompiler {
           continue;
         }
 
-        // Step 4: Unique global
-        if (globalLabelFreq.get(memberKey) === 1) {
-          const targetId = globalLabelToId.get(memberKey)!;
-          if (targetId !== call.caller_nid) {
-            const edgeId = `${call.caller_nid}->${targetId}_calls`;
-            if (!this.edges.has(edgeId)) {
-              this.edges.set(edgeId, {
-                source: call.caller_nid,
-                target: targetId,
-                relation: 'calls',
-                type: 'PHYSICAL',
-                score: 0.8,
-                source_file: callerFile,
-                source_location: call.source_location,
-              });
-            }
-          }
-        }
+        // No Step 4 for member calls: receiver type is unknown, so a unique
+        // global name match would attribute every foo.x() in the repo to a
+        // lone top-level x(). Leave unresolved instead.
       } else {
         // Non-member call
         const calleeKey = calleeName.toLowerCase();
