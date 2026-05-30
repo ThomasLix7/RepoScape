@@ -86,6 +86,9 @@ export class CanvasRenderer {
   private readonly CAMERA_OMEGA = 11;
   private zoomVel = 0; // zoom velocity in log-zoom units/sec
 
+  // Accumulated time (s) driving the pulsing call-flow dots on focused edges.
+  private flowPhase = 0;
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d')!;
@@ -596,6 +599,7 @@ export class CanvasRenderer {
 
     const dtMs = options.dtMs ?? 16.67;
     this.updateCamera(dtMs);
+    this.flowPhase += dtMs / 1000;
 
     const dataChanged = nodes !== this.lastNodes || edges !== this.lastEdges;
     if (nodes !== this.lastNodes) {
@@ -685,18 +689,26 @@ export class CanvasRenderer {
 
     const activeId = this.activeNodeId();
 
-    // Focus model: hover/selection wins, then changed nodes dim the rest.
-    const activeNeighbors = activeId != null ? this.adjacency.get(activeId) : null;
-    const focusActive = activeId != null || hasChangeFocus;
-    const nodeInFocus = (id: string): boolean => {
-      if (activeId != null) return id === activeId || (activeNeighbors?.has(id) ?? false);
-      if (hasChangeFocus) return focusedIds.has(id);
-      return true;
-    };
-    const edgeIncident = (e: GraphEdge): boolean => {
-      if (activeId != null) return e.source === activeId || e.target === activeId;
-      if (hasChangeFocus) return focusedIds.has(e.source) || focusedIds.has(e.target);
-      return false;
+    // Unified focus model: a "core" set (hover/selection, or tour focus) plus its
+    // 1-degree neighbors, producing a three-tier visual gradient instead of binary.
+    const coreIds: Set<string> = activeId != null ? new Set([activeId]) : focusedIds;
+    const focusActive = coreIds.size > 0;
+    const neighborIds = new Set<string>();
+    if (focusActive) {
+      for (const id of coreIds) {
+        const adj = this.adjacency.get(id);
+        if (adj) for (const nb of adj) if (!coreIds.has(nb)) neighborIds.add(nb);
+      }
+    }
+    // 2 = core (discussed), 1 = neighbor (1-degree context), 0 = background.
+    const nodeTier = (id: string): number =>
+      coreIds.has(id) ? 2 : neighborIds.has(id) ? 1 : 0;
+    const edgeTier = (e: GraphEdge): number => {
+      const s = coreIds.has(e.source);
+      const t = coreIds.has(e.target);
+      if (s && t) return 2; // core relationship: both endpoints discussed
+      if (s || t) return 1; // links a core node to a neighbor
+      return 0;
     };
 
     if (zoom >= 0.10) {
@@ -709,8 +721,10 @@ export class CanvasRenderer {
         const targetPos = this.nodePositions.get(edge.target);
         if (!sourcePos || !targetPos) continue;
 
-        const incident = focusActive && edgeIncident(edge);
-        const a = !focusActive ? 1 : incident ? 1 : 0.08;
+        // -1 = no focus active (show all); else 2 core / 1 neighbor / 0 background.
+        const tier = focusActive ? edgeTier(edge) : -1;
+        const a = tier === -1 ? 1 : tier === 2 ? 1 : tier === 1 ? 0.4 : 0.04;
+        const isCore = tier === 2;
 
         ctx.beginPath();
         ctx.moveTo(sourcePos.x, sourcePos.y);
@@ -718,25 +732,50 @@ export class CanvasRenderer {
 
         if (edge.type === 'PHYSICAL') {
           ctx.strokeStyle = `rgba(0, 243, 255, ${0.28 * a})`;
-          ctx.lineWidth = incident ? 2 : 1.2;
+          ctx.lineWidth = isCore ? 2.6 : 1.2;
         } else if (edge.type === 'COGNITIVE') {
           ctx.strokeStyle = `rgba(189, 147, 249, ${0.5 * a})`;
-          ctx.lineWidth = 1;
+          ctx.lineWidth = isCore ? 2.2 : 1;
           ctx.setLineDash([4, 4]);
         } else {
           ctx.strokeStyle = `rgba(255, 184, 108, ${0.4 * a})`;
-          ctx.lineWidth = incident ? 2.2 : 1.5;
+          ctx.lineWidth = isCore ? 2.8 : 1.5;
           ctx.setLineDash([2, 2]);
         }
 
-        if (incident) {
+        if (isCore) {
           ctx.shadowColor = ctx.strokeStyle as string;
-          ctx.shadowBlur = 6;
+          ctx.shadowBlur = 10;
         }
 
         ctx.stroke();
         ctx.setLineDash([]);
         ctx.shadowBlur = 0;
+
+        // Pulsing call-flow: bright dots gliding source -> target on focused edges.
+        if (tier >= 1) {
+          const DOTS = 3;
+          const SPEED = 0.35; // cycles per second
+          const flowColor =
+            edge.type === 'PHYSICAL' ? '#00f3ff' :
+            edge.type === 'COGNITIVE' ? '#bd93f9' : '#ffb86c';
+          ctx.fillStyle = flowColor;
+          ctx.shadowColor = flowColor;
+          ctx.shadowBlur = 6;
+          const dotR = (isCore ? 2.6 : 1.8) / Math.max(0.6, zoom);
+          for (let k = 0; k < DOTS; k++) {
+            const frac = (this.flowPhase * SPEED + k / DOTS) % 1;
+            const dx = sourcePos.x + (targetPos.x - sourcePos.x) * frac;
+            const dy = sourcePos.y + (targetPos.y - sourcePos.y) * frac;
+            // Fade dots in/out toward the endpoints so they "emit" and "arrive".
+            ctx.globalAlpha = (isCore ? 1 : 0.5) * (0.4 + 0.6 * Math.sin(frac * Math.PI));
+            ctx.beginPath();
+            ctx.arc(dx, dy, dotR, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.globalAlpha = 1;
+          ctx.shadowBlur = 0;
+        }
       }
     }
 
@@ -757,9 +796,17 @@ export class CanvasRenderer {
       const drawSize = Math.max(size, 2 / zoom);
 
       const isHighlighted = this.highlightedNodes.has(node.id);
-      const inFocus = nodeInFocus(node.id);
-      // Full opacity for focused/searched nodes, dim others.
-      ctx.globalAlpha = isHighlighted || node.focus ? 1 : (inFocus ? 1 : 0.15);
+      const tier = nodeTier(node.id);
+      // Three-tier gradient: core 1.0, neighbor 0.7, background 0.08 (when focus active).
+      ctx.globalAlpha = isHighlighted
+        ? 1
+        : !focusActive
+        ? 1
+        : tier === 2
+        ? 1
+        : tier === 1
+        ? 0.7
+        : 0.08;
 
       const colorIdx = (node.community ?? 0) % communityColors.length;
 
@@ -779,7 +826,8 @@ export class CanvasRenderer {
         const base = communityColors[colorIdx];
         ctx.fillStyle = this.lighten(base, 0.55);
         ctx.shadowColor = base;
-        ctx.shadowBlur = 20;
+        // Breathing glow so the discussed node reads as "alive" during narration.
+        ctx.shadowBlur = 20 + 5 * Math.sin(Date.now() / 300);
       } else {
         ctx.fillStyle = communityColors[colorIdx];
         ctx.shadowColor = communityColors[colorIdx];
@@ -797,7 +845,7 @@ export class CanvasRenderer {
         ctx.stroke();
       }
 
-      const labelByFocus = focusActive && inFocus;
+      const labelByFocus = focusActive && tier >= 1;
       const isProminent = isHub || size >= 9;
       const area = w * h;
       const baseArea = 1200 * 800;

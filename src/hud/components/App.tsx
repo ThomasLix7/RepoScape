@@ -8,6 +8,10 @@ const INITIAL_TOKEN = new URLSearchParams(window.location.search).get('token') |
 // Duration (ms) a node stays highlighted after its last "edited" signal.
 const FOCUS_TTL_MS = 8000;
 
+// Let the camera fly/frame the beat's nodes before the narration starts speaking,
+// so the voice lands on a view that has already arrived ("指哪说哪").
+const BEAT_SPEAK_DELAY_MS = 400;
+
 function getToken(): string {
   return INITIAL_TOKEN;
 }
@@ -32,9 +36,12 @@ export function App() {
 
   // Narrated tour: a tour arrives over WS and waits for a one-click start
   // (browsers block speechSynthesis until a user gesture).
-  const [pendingTour, setPendingTour] = useState<Tour | null>(null);
+  const [loadedTour, setLoadedTour] = useState<Tour | null>(null);
   const [tourActive, setTourActive] = useState(false);
+  const [subtitle, setSubtitle] = useState('');
   const tourRef = useRef<{ beats: Tour['beats']; idx: number } | null>(null);
+  const beatTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [activeFileTypes, setActiveFileTypes] = useState<Set<string>>(
     new Set(['code', 'document', 'concept'])
@@ -137,54 +144,78 @@ export function App() {
       tourRef.current = null;
       applyFocusByIds(new Set());
       setTourActive(false);
+      setSubtitle('');
       return;
     }
     const beat = t.beats[t.idx];
-    // Ids that match no current node are silently skipped (dangling-id safety).
+    // Move the camera/highlight first (ids matching no node are silently skipped).
     applyFocusByIds(new Set(beat.nodes));
+    setSubtitle(beat.say);
 
     let advanced = false;
     const advance = () => {
       if (advanced || tourRef.current !== t) return;
       advanced = true;
+      if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
       t.idx += 1;
       playBeat();
     };
 
-    const synth = typeof window !== 'undefined' ? window.speechSynthesis : undefined;
-    const estMs = Math.max(2500, beat.say.length * 90);
-    if (synth) {
-      const utter = new SpeechSynthesisUtterance(beat.say);
-      if (beat.lang) utter.lang = beat.lang;
-      utter.onend = advance;
-      utter.onerror = advance;
-      synth.speak(utter);
-      // Watchdog: if onend never fires (no installed voice, etc.) keep the tour moving.
-      setTimeout(advance, estMs + 8000);
-    } else {
-      setTimeout(advance, estMs);
-    }
+    // Delay narration so the voice lands after the camera has begun arriving.
+    if (beatTimerRef.current) clearTimeout(beatTimerRef.current);
+    beatTimerRef.current = setTimeout(() => {
+      if (tourRef.current !== t) return;
+      const synth = typeof window !== 'undefined' ? window.speechSynthesis : undefined;
+      const estMs = Math.max(2500, beat.say.length * 90);
+      if (synth) {
+        const utter = new SpeechSynthesisUtterance(beat.say);
+        if (beat.lang) utter.lang = beat.lang;
+        utter.onend = advance;
+        utter.onerror = advance;
+        synth.speak(utter);
+        // Watchdog: if onend never fires (no installed voice, etc.) keep the tour moving.
+        watchdogRef.current = setTimeout(advance, estMs + 8000);
+      } else {
+        watchdogRef.current = setTimeout(advance, estMs);
+      }
+    }, BEAT_SPEAK_DELAY_MS);
   }, [applyFocusByIds]);
 
   const handleTour = useCallback((tour: Tour) => {
     // A new tour interrupts any running one; it waits for a one-click start.
-    if (typeof window !== 'undefined') window.speechSynthesis?.cancel();
+    // Null tourRef before cancel() so a cancel-fired onend can't advance the old tour.
     tourRef.current = null;
+    if (typeof window !== 'undefined') window.speechSynthesis?.cancel();
+    if (beatTimerRef.current) { clearTimeout(beatTimerRef.current); beatTimerRef.current = null; }
+    if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
+    applyFocusByIds(new Set());
     setTourActive(false);
-    setPendingTour(tour);
-  }, []);
+    setSubtitle('');
+    setLoadedTour(tour);
+  }, [applyFocusByIds]);
+
+  const stopTour = useCallback(() => {
+    tourRef.current = null;
+    if (typeof window !== 'undefined') window.speechSynthesis?.cancel();
+    if (beatTimerRef.current) { clearTimeout(beatTimerRef.current); beatTimerRef.current = null; }
+    if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
+    applyFocusByIds(new Set());
+    setTourActive(false);
+    setSubtitle('');
+  }, [applyFocusByIds]);
 
   const startTour = useCallback(() => {
-    if (!pendingTour) return;
-    tourRef.current = { beats: pendingTour.beats, idx: 0 };
-    setPendingTour(null);
+    if (!loadedTour) return;
+    tourRef.current = { beats: loadedTour.beats, idx: 0 };
     setTourActive(true);
     playBeat();
-  }, [pendingTour, playBeat]);
+  }, [loadedTour, playBeat]);
 
   useEffect(() => {
     return () => {
       if (typeof window !== 'undefined') window.speechSynthesis?.cancel();
+      if (beatTimerRef.current) clearTimeout(beatTimerRef.current);
+      if (watchdogRef.current) clearTimeout(watchdogRef.current);
     };
   }, []);
 
@@ -329,10 +360,34 @@ export function App() {
         ref={canvasRef}
         style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'block', cursor: 'grab' }}
       />
-      {(pendingTour || tourActive) && (
+      {tourActive && subtitle && (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: 76,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 10,
+            maxWidth: 'min(720px, 70vw)',
+            padding: '14px 22px',
+            borderRadius: 16,
+            border: '1px solid rgba(0,243,255,0.35)',
+            background: 'rgba(13,17,23,0.55)',
+            backdropFilter: 'blur(12px)',
+            WebkitBackdropFilter: 'blur(12px)',
+            color: '#e6edf3',
+            font: '500 17px/1.5 system-ui, sans-serif',
+            textAlign: 'center',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.45)',
+            pointerEvents: 'none',
+          }}
+        >
+          {subtitle}
+        </div>
+      )}
+      {(loadedTour || tourActive) && (
         <button
-          onClick={pendingTour ? startTour : undefined}
-          disabled={!pendingTour}
+          onClick={tourActive ? stopTour : startTour}
           style={{
             position: 'fixed',
             bottom: 24,
@@ -342,14 +397,14 @@ export function App() {
             padding: '10px 20px',
             borderRadius: 999,
             border: '1px solid #00f3ff',
-            background: pendingTour ? '#00f3ff' : 'rgba(13,17,23,0.85)',
-            color: pendingTour ? '#0d1117' : '#00f3ff',
+            background: tourActive ? 'rgba(13,17,23,0.85)' : '#00f3ff',
+            color: tourActive ? '#00f3ff' : '#0d1117',
             font: '600 14px system-ui, sans-serif',
-            cursor: pendingTour ? 'pointer' : 'default',
+            cursor: 'pointer',
             boxShadow: '0 2px 16px rgba(0,243,255,0.35)',
           }}
         >
-          {pendingTour ? `▶ Play Tour (${pendingTour.beats.length})` : '🔊 Narrating...'}
+          {tourActive ? '⏹ Stop Tour' : `▶ Play Tour (${loadedTour?.beats.length || 0})`}
         </button>
       )}
       <Sidebar
