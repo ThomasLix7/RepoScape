@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
-import { connectHUD, GraphNode, GraphEdge, GraphDiff, HUDConnection, Tour } from '../connection.js';
+import { connectHUD, GraphNode, GraphEdge, GraphDiff, HUDConnection, Tour, CommunitySummary, NeighborsContext } from '../connection.js';
 import { CanvasRenderer } from './CanvasRenderer.js';
 import { Sidebar } from './Sidebar.js';
 
@@ -251,25 +251,27 @@ export function App() {
     return () => clearInterval(interval);
   }, []);
 
-  const filteredNodes = useMemo(() => {
+  // Faceted base: path + node-type filters only, WITHOUT the community filter.
+  // The community summary builds on this so toggling one community never makes
+  // the others vanish from the list (the classic faceted-search deadlock).
+  const baseFilteredNodes = useMemo(() => {
     return nodes.filter(n => {
       if (!activeFileTypes.has(n.file_type)) return false;
-      if (activeCommunities && !activeCommunities.has(n.community ?? 0)) return false;
       if (pathPrefix && !n.source_file.startsWith(pathPrefix)) return false;
       return true;
     });
-  }, [nodes, activeFileTypes, activeCommunities, pathPrefix]);
+  }, [nodes, activeFileTypes, pathPrefix]);
+
+  const filteredNodes = useMemo(() => {
+    if (!activeCommunities) return baseFilteredNodes;
+    return baseFilteredNodes.filter(n => activeCommunities.has(n.community ?? 0));
+  }, [baseFilteredNodes, activeCommunities]);
 
   const visibleNodeIds = useMemo(() => new Set(filteredNodes.map(n => n.id)), [filteredNodes]);
 
   const filteredEdges = useMemo(() => {
     return edges.filter(e => visibleNodeIds.has(e.source) && visibleNodeIds.has(e.target));
   }, [edges, visibleNodeIds]);
-
-  const availableCommunities = useMemo(
-    () => [...new Set(nodes.map(n => n.community ?? 0))].sort((a, b) => a - b),
-    [nodes]
-  );
 
   const searchResults = useMemo(() => {
     if (!searchQuery.trim()) return [];
@@ -279,6 +281,80 @@ export function App() {
     );
   }, [searchQuery, nodes]);
 
+  const nodeMap = useMemo(() => new Map(nodes.map(n => [n.id, n])), [nodes]);
+
+  const communitiesSummary = useMemo<CommunitySummary[]>(() => {
+    const total = baseFilteredNodes.length;
+    if (total === 0) return [];
+
+    const degree = new Map<string, number>();
+    for (const e of edges) {
+      degree.set(e.source, (degree.get(e.source) ?? 0) + 1);
+      degree.set(e.target, (degree.get(e.target) ?? 0) + 1);
+    }
+
+    const communityMembers = new Map<number, GraphNode[]>();
+    for (const n of baseFilteredNodes) {
+      const cid = n.community ?? 0;
+      if (!communityMembers.has(cid)) communityMembers.set(cid, []);
+      communityMembers.get(cid)!.push(n);
+    }
+
+    const summaries: CommunitySummary[] = [];
+    for (const [id, members] of communityMembers.entries()) {
+      const folderCounts = new Map<string, number>();
+      for (const n of members) {
+        const parts = n.source_file.split('/');
+        const folder = parts.length > 1 ? parts.slice(0, -1).join('/') : '(root)';
+        folderCounts.set(folder, (folderCounts.get(folder) || 0) + 1);
+      }
+      let dominantFolder = '';
+      let maxCount = 0;
+      for (const [folder, count] of folderCounts.entries()) {
+        if (count > maxCount) { maxCount = count; dominantFolder = folder; }
+      }
+
+      let bestDegree = -1;
+      let hubNodeFile = '';
+      for (const n of members) {
+        const d = degree.get(n.id) ?? 0;
+        if (d > bestDegree) {
+          bestDegree = d;
+          hubNodeFile = n.source_file;
+        }
+      }
+      const hubNodeName = hubNodeFile ? (hubNodeFile.split('/').pop() || '') : 'N/A';
+
+      summaries.push({
+        id,
+        size: members.length,
+        percentage: Math.round((members.length / total) * 100),
+        dominantFolder,
+        hubNodeName,
+      });
+    }
+
+    summaries.sort((a, b) => b.size - a.size);
+    return summaries;
+  }, [baseFilteredNodes, edges]);
+
+  const selectedNodeNeighbors = useMemo<NeighborsContext>(() => {
+    if (!selectedNode) return { incoming: [], outgoing: [] };
+    const incomingMap = new Map<string, GraphNode>();
+    const outgoingMap = new Map<string, GraphNode>();
+    for (const edge of edges) {
+      if (edge.target === selectedNode.id) {
+        const src = nodeMap.get(edge.source);
+        if (src && !incomingMap.has(src.id)) incomingMap.set(src.id, src);
+      }
+      if (edge.source === selectedNode.id) {
+        const tgt = nodeMap.get(edge.target);
+        if (tgt && !outgoingMap.has(tgt.id)) outgoingMap.set(tgt.id, tgt);
+      }
+    }
+    return { incoming: Array.from(incomingMap.values()), outgoing: Array.from(outgoingMap.values()) };
+  }, [selectedNode, edges, nodeMap]);
+
   useEffect(() => {
     rendererRef.current?.setHighlightedNodes(
       new Set(searchResults.map(n => n.id))
@@ -286,8 +362,16 @@ export function App() {
   }, [searchResults]);
 
   const handleSearchSelect = (nodeId: string) => {
+    if (!nodeId) {
+      setSelectedNode(null);
+      setSelectedEdge(null);
+      rendererRef.current?.setSelectedNode(null);
+      return;
+    }
     rendererRef.current?.flyToNode(nodeId);
+    rendererRef.current?.setSelectedNode(nodeId);
     setSelectedNode(nodes.find(n => n.id === nodeId) ?? null);
+    setSelectedEdge(null);
     setSearchQuery('');
   };
 
@@ -424,13 +508,16 @@ export function App() {
         searchResults={searchResults}
         onSearchChange={setSearchQuery}
         onSearchSelect={handleSearchSelect}
-        availableCommunities={availableCommunities}
         activeFileTypes={activeFileTypes}
         activeCommunities={activeCommunities}
         pathPrefix={pathPrefix}
         onToggleFileType={handleToggleFileType}
         onSetCommunities={handleSetCommunities}
         onSetPathPrefix={handleSetPathPrefix}
+        communitiesSummary={communitiesSummary}
+        selectedNodeNeighbors={selectedNodeNeighbors}
+        hubNodes={hubNodes}
+        baseFilteredNodes={baseFilteredNodes}
       />
     </div>
   );

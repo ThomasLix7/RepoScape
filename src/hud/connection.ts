@@ -16,6 +16,19 @@ export interface GraphNode {
   focusTtl?: number;
 }
 
+export interface CommunitySummary {
+  id: number;
+  size: number;
+  percentage: number;
+  dominantFolder: string;
+  hubNodeName: string;
+}
+
+export interface NeighborsContext {
+  incoming: GraphNode[];
+  outgoing: GraphNode[];
+}
+
 export interface GraphEdge {
   source: string;
   target: string;
