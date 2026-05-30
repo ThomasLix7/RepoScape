@@ -62,6 +62,8 @@ export class FileWatcher {
       this.pendingDeletes.add(relativePath);
     } else {
       this.pendingChanges.add(relativePath);
+      // Immediate highlight before debounced recompile.
+      this.onFocus?.([relativePath]);
     }
 
     if (this.debounceTimer) {

@@ -5,6 +5,9 @@ import { Sidebar } from './Sidebar.js';
 
 const INITIAL_TOKEN = new URLSearchParams(window.location.search).get('token') || '';
 
+// Duration (ms) a node stays highlighted after its last "edited" signal.
+const FOCUS_TTL_MS = 8000;
+
 function getToken(): string {
   return INITIAL_TOKEN;
 }
@@ -33,8 +36,6 @@ export function App() {
   const [activeCommunities, setActiveCommunities] = useState<Set<number> | null>(null);
   const [pathPrefix, setPathPrefix] = useState('');
 
-  const focusTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
-
   const renderStateRef = useRef({
     nodes: [] as GraphNode[],
     edges: [] as GraphEdge[],
@@ -44,7 +45,12 @@ export function App() {
     hubNodes: new Set<string>(),
   });
 
-  const edgeKey = (e: GraphEdge) => `${e.source}->${e.target}_${e.relation}`;
+  // Must mirror the server's getEdgeMapKey (compiler.ts) so removedEdges keys match.
+  const edgeKey = (e: GraphEdge) => {
+    if (e.type === 'COGNITIVE') return `cog_${e.source}->${e.target}_${e.relation}`;
+    if (e.type === 'SUSPICIOUS') return `sus_${e.source}->${e.target}`;
+    return `${e.source}->${e.target}_${e.relation}`;
+  };
 
   const handleDiff = useCallback((diff: GraphDiff) => {
     setNodes((prev) => {
@@ -62,6 +68,7 @@ export function App() {
       const map = new Map(prev.map((e) => [edgeKey(e), e]));
       for (const key of diff.removedEdges) map.delete(key);
       for (const edge of diff.addedEdges) map.set(edgeKey(edge), edge);
+      for (const edge of diff.updatedEdges) map.set(edgeKey(edge), edge);
       return Array.from(map.values());
     });
 
@@ -96,23 +103,11 @@ export function App() {
     setNodes((prev) =>
       prev.map((n) => {
         if (n.source_file === event.file) {
-          return { ...n, focus: true, activity: event.activity || n.activity, focusTtl: Date.now() + 60000 };
+          return { ...n, focus: true, activity: event.activity || n.activity, focusTtl: Date.now() + FOCUS_TTL_MS };
         }
         return n;
       })
     );
-    const timer = setTimeout(() => {
-      focusTimersRef.current.delete(timer);
-      setNodes((prev) =>
-        prev.map((n) => {
-          if (n.source_file === event.file && n.focusTtl && Date.now() > n.focusTtl) {
-            return { ...n, focus: false };
-          }
-          return n;
-        })
-      );
-    }, 61000);
-    focusTimersRef.current.add(timer);
   }, []);
 
   useEffect(() => {
@@ -128,13 +123,23 @@ export function App() {
     return () => conn.close();
   }, [handleDiff, handleFullGraph, handleStatusChange, handleFocus]);
 
+  // Periodic sweep to clear expired focus highlights.
   useEffect(() => {
-    return () => {
-      for (const timer of focusTimersRef.current) {
-        clearTimeout(timer);
-      }
-      focusTimersRef.current.clear();
-    };
+    const interval = setInterval(() => {
+      const now = Date.now();
+      setNodes((prev) => {
+        let changed = false;
+        const next = prev.map((n) => {
+          if (n.focus && n.focusTtl && now > n.focusTtl) {
+            changed = true;
+            return { ...n, focus: false };
+          }
+          return n;
+        });
+        return changed ? next : prev;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
   }, []);
 
   const filteredNodes = useMemo(() => {

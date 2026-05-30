@@ -69,6 +69,10 @@ export class CanvasRenderer {
 
   private highlightedNodes = new Set<string>();
 
+  // Track focus set to drive the camera, and remember the pre-focus view to restore.
+  private lastFocusSignature = '';
+  private preFocusCamera: { x: number; y: number; zoom: number } | null = null;
+
   private lastFrameHash = '';
   private frameSkipCount = 0;
   private lastNodes: GraphNode[] | null = null;
@@ -78,8 +82,9 @@ export class CanvasRenderer {
   private labelCache = new Map<string, { img: HTMLCanvasElement; w: number; h: number }>();
   private static readonly LABEL_FONT_PX = 13;
 
-  private readonly STIFFNESS = 0.08;
-  private readonly DAMPING = 2 * Math.sqrt(0.08); // ≈0.566
+  // Camera spring frequency (rad/s). ~11 settles in ~0.35s with no overshoot.
+  private readonly CAMERA_OMEGA = 11;
+  private zoomVel = 0; // zoom velocity in log-zoom units/sec
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -116,24 +121,24 @@ export class CanvasRenderer {
     const TICK_INTERVAL = 1000 / 30;
 
     this.simulationTimer = setInterval(() => {
-      if (this.d3Simulation) {
-        this.d3Simulation.tick();
-        for (const d3n of this.d3Nodes) {
-          if (d3n.x !== undefined && d3n.y !== undefined) {
-            this.nodePositions.set(d3n.id, { x: d3n.x, y: d3n.y });
-          }
+      const sim = this.d3Simulation;
+      if (!sim) return;
+      // Stop when layout has cooled to avoid micro-jitter from forceCollide.
+      if (sim.alpha() <= sim.alphaMin()) return;
+      sim.tick();
+      for (const d3n of this.d3Nodes) {
+        if (d3n.x !== undefined && d3n.y !== undefined) {
+          this.nodePositions.set(d3n.id, { x: d3n.x, y: d3n.y });
         }
       }
     }, TICK_INTERVAL);
   }
 
-  // Place each community on a ring so the colored groups physically separate
-  // instead of collapsing into one overlapping blob.
+  // Position communities on a ring for visual separation.
   private communityAnchors(nodes: GraphNode[]): Map<number, { x: number; y: number }> {
     const communities = Array.from(new Set(nodes.map((n) => n.community ?? 0))).sort((a, b) => a - b);
     const anchors = new Map<number, { x: number; y: number }>();
     const n = communities.length;
-    // Ring radius grows with community count so dense graphs don't crowd.
     const radius = n <= 1 ? 0 : 120 + n * 45;
     communities.forEach((c, i) => {
       if (n <= 1) {
@@ -260,6 +265,41 @@ export class CanvasRenderer {
 
   setHighlightedNodes(ids: Set<string>): void {
     this.highlightedNodes = ids;
+  }
+
+  // Move the camera to frame the given nodes, zooming in to fit them.
+  private focusCameraOnNodes(ids: Set<string>): void {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let count = 0;
+    for (const id of ids) {
+      const p = this.nodePositions.get(id);
+      if (!p) continue;
+      count++;
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    }
+    if (count === 0) return;
+
+    const rect = this.canvas.getBoundingClientRect();
+    const pad = 180;
+    const gw = (maxX - minX) + pad * 2;
+    const gh = (maxY - minY) + pad * 2;
+    this.camera.targetX = (minX + maxX) / 2;
+    this.camera.targetY = (minY + maxY) / 2;
+    this.camera.targetZoom = Math.max(0.6, Math.min(2.2, Math.min(rect.width / gw, rect.height / gh)));
+    this.userInteracted = true;
+  }
+
+  // Blend a hex color toward white by `amount` (0..1) for a brighter fill.
+  private lighten(hex: string, amount: number): string {
+    const n = parseInt(hex.slice(1), 16);
+    const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+    const lr = Math.round(r + (255 - r) * amount);
+    const lg = Math.round(g + (255 - g) * amount);
+    const lb = Math.round(b + (255 - b) * amount);
+    return `rgb(${lr}, ${lg}, ${lb})`;
   }
 
   private getLabelImage(text: string): { img: HTMLCanvasElement; w: number; h: number } {
@@ -402,7 +442,7 @@ export class CanvasRenderer {
   }
 
   private findEdgeAt(clientX: number, clientY: number): GraphEdge | null {
-    if (this.camera.zoom < 0.3) return null;
+    if (this.camera.zoom < 0.10) return null;
 
     const rect = this.canvas.getBoundingClientRect();
     const x = (clientX - rect.left - rect.width / 2) / this.camera.zoom + this.camera.x;
@@ -435,36 +475,58 @@ export class CanvasRenderer {
     return closestEdge;
   }
 
+  // Critically-damped spring integration (stable, frame-rate independent).
+  private springStep(p: number, v: number, target: number, omega: number, h: number): { p: number; v: number } {
+    const d = p - target;
+    const e = Math.exp(-omega * h);
+    const np = target + (d + (v + omega * d) * h) * e;
+    const nv = (v - omega * (v + omega * d) * h) * e;
+    return { p: np, v: nv };
+  }
+
   private updateCamera(dtMs: number = 16.67): void {
-    const dt = Math.min(dtMs, 33.34) / 16.67;
-    const forceX = (-this.STIFFNESS * (this.camera.x - this.camera.targetX) - this.DAMPING * this.camera.vx) * dt;
-    const forceY = (-this.STIFFNESS * (this.camera.y - this.camera.targetY) - this.DAMPING * this.camera.vy) * dt;
-    const forceZoom = -this.STIFFNESS * (this.camera.zoom - this.camera.targetZoom) * dt;
+    const h = Math.min(dtMs, 50) / 1000; // seconds; clamp long stalls
+    const omega = this.CAMERA_OMEGA;
 
-    this.camera.vx += forceX;
-    this.camera.vy += forceY;
+    const rx = this.springStep(this.camera.x, this.camera.vx, this.camera.targetX, omega, h);
+    this.camera.x = rx.p;
+    this.camera.vx = rx.v;
+    const ry = this.springStep(this.camera.y, this.camera.vy, this.camera.targetY, omega, h);
+    this.camera.y = ry.p;
+    this.camera.vy = ry.v;
 
-    this.camera.x += this.camera.vx;
-    this.camera.y += this.camera.vy;
-    this.camera.zoom += forceZoom;
+    // Zoom in log space for perceptually uniform easing (1→2 feels like 2→4).
+    const logZoom = Math.log(this.camera.zoom);
+    const logTarget = Math.log(this.camera.targetZoom);
+    const rz = this.springStep(logZoom, this.zoomVel, logTarget, omega, h);
+    this.zoomVel = rz.v;
+    this.camera.zoom = Math.exp(rz.p);
 
-    if (Math.abs(this.camera.vx) < 0.01 && Math.abs(this.camera.vy) < 0.01) {
+    // Snap when settled to avoid endpoint jitter.
+    if (Math.abs(this.camera.x - this.camera.targetX) < 0.05 && Math.abs(this.camera.vx) < 0.05) {
       this.camera.x = this.camera.targetX;
-      this.camera.y = this.camera.targetY;
       this.camera.vx = 0;
+    }
+    if (Math.abs(this.camera.y - this.camera.targetY) < 0.05 && Math.abs(this.camera.vy) < 0.05) {
+      this.camera.y = this.camera.targetY;
       this.camera.vy = 0;
+    }
+    if (Math.abs(logTarget - rz.p) < 0.002 && Math.abs(this.zoomVel) < 0.002) {
+      this.camera.zoom = this.camera.targetZoom;
+      this.zoomVel = 0;
     }
 
     if (
       !Number.isFinite(this.camera.x) || !Number.isFinite(this.camera.y) ||
       !Number.isFinite(this.camera.zoom) || !Number.isFinite(this.camera.vx) ||
-      !Number.isFinite(this.camera.vy)
+      !Number.isFinite(this.camera.vy) || !Number.isFinite(this.zoomVel)
     ) {
       this.camera.x = Number.isFinite(this.camera.targetX) ? this.camera.targetX : 0;
       this.camera.y = Number.isFinite(this.camera.targetY) ? this.camera.targetY : 0;
       this.camera.zoom = Number.isFinite(this.camera.targetZoom) ? this.camera.targetZoom : 1;
       this.camera.vx = 0;
       this.camera.vy = 0;
+      this.zoomVel = 0;
     }
   }
 
@@ -542,17 +604,44 @@ export class CanvasRenderer {
     this.lastNodes = nodes;
     this.lastEdges = edges;
 
-    if (!dataChanged && this.highlightedNodes.size === 0) {
-      const fingerprint = [
-        this.camera.x.toFixed(1), this.camera.y.toFixed(1),
-        this.camera.zoom.toFixed(3),
-        nodes.length,
-        this.hoveredNode?.id ?? '',
-        this.selectedNodeId ?? '',
-        this.d3Simulation?.alpha().toFixed(3) ?? '0',
-        this.draggedNode ? `${this.draggedNode.fx?.toFixed(1)},${this.draggedNode.fy?.toFixed(1)}` : '',
-      ].join('|');
+    const focusedIds = new Set<string>();
+    for (const n of nodes) if (n.focus) focusedIds.add(n.id);
+    const hasChangeFocus = focusedIds.size > 0;
 
+    // On focus changes, fly the camera to frame the changed nodes; restore on clear.
+    const focusSig = Array.from(focusedIds).sort().join(',');
+    if (focusSig !== this.lastFocusSignature) {
+      if (hasChangeFocus) {
+        if (!this.preFocusCamera) {
+          this.preFocusCamera = {
+            x: this.camera.targetX,
+            y: this.camera.targetY,
+            zoom: this.camera.targetZoom,
+          };
+        }
+        this.focusCameraOnNodes(focusedIds);
+      } else if (this.preFocusCamera) {
+        this.camera.targetX = this.preFocusCamera.x;
+        this.camera.targetY = this.preFocusCamera.y;
+        this.camera.targetZoom = this.preFocusCamera.zoom;
+        this.preFocusCamera = null;
+      }
+      this.lastFocusSignature = focusSig;
+    }
+
+    // Frame-skip only when scene is idle (no camera/sim movement).
+    const cameraMoving =
+      this.camera.x !== this.camera.targetX ||
+      this.camera.y !== this.camera.targetY ||
+      this.camera.zoom !== this.camera.targetZoom;
+    const simRunning =
+      !!this.d3Simulation && this.d3Simulation.alpha() > this.d3Simulation.alphaMin();
+    const idle =
+      !dataChanged && !cameraMoving && !simRunning && !hasChangeFocus &&
+      this.highlightedNodes.size === 0 && !this.draggedNode;
+
+    if (idle) {
+      const fingerprint = `${this.hoveredNode?.id ?? ''}|${this.selectedNodeId ?? ''}|${options.showPhysical ? 1 : 0}${options.showCognitive ? 1 : 0}${options.showSuspicious ? 1 : 0}`;
       if (fingerprint === this.lastFrameHash) {
         this.frameSkipCount++;
         return;
@@ -596,7 +685,21 @@ export class CanvasRenderer {
 
     const activeId = this.activeNodeId();
 
-    if (zoom >= 0.3) {
+    // Focus model: hover/selection wins, then changed nodes dim the rest.
+    const activeNeighbors = activeId != null ? this.adjacency.get(activeId) : null;
+    const focusActive = activeId != null || hasChangeFocus;
+    const nodeInFocus = (id: string): boolean => {
+      if (activeId != null) return id === activeId || (activeNeighbors?.has(id) ?? false);
+      if (hasChangeFocus) return focusedIds.has(id);
+      return true;
+    };
+    const edgeIncident = (e: GraphEdge): boolean => {
+      if (activeId != null) return e.source === activeId || e.target === activeId;
+      if (hasChangeFocus) return focusedIds.has(e.source) || focusedIds.has(e.target);
+      return false;
+    };
+
+    if (zoom >= 0.10) {
       for (const edge of edges) {
         if (edge.type === 'PHYSICAL' && !options.showPhysical) continue;
         if (edge.type === 'COGNITIVE' && !options.showCognitive) continue;
@@ -606,8 +709,8 @@ export class CanvasRenderer {
         const targetPos = this.nodePositions.get(edge.target);
         if (!sourcePos || !targetPos) continue;
 
-        const incident = activeId != null && (edge.source === activeId || edge.target === activeId);
-        const a = activeId == null ? 1 : incident ? 1 : 0.08;
+        const incident = focusActive && edgeIncident(edge);
+        const a = !focusActive ? 1 : incident ? 1 : 0.08;
 
         ctx.beginPath();
         ctx.moveTo(sourcePos.x, sourcePos.y);
@@ -617,7 +720,7 @@ export class CanvasRenderer {
           ctx.strokeStyle = `rgba(0, 243, 255, ${0.28 * a})`;
           ctx.lineWidth = incident ? 2 : 1.2;
         } else if (edge.type === 'COGNITIVE') {
-          ctx.strokeStyle = `rgba(189, 147, 249, ${0.22 * a})`;
+          ctx.strokeStyle = `rgba(189, 147, 249, ${0.5 * a})`;
           ctx.lineWidth = 1;
           ctx.setLineDash([4, 4]);
         } else {
@@ -637,8 +740,6 @@ export class CanvasRenderer {
       }
     }
 
-    const focusNeighbors = activeId != null ? this.adjacency.get(activeId) : null;
-
     const communityColors = [
       '#ff79c6', '#50fa7b', '#f1fa8c', '#bd93f9',
       '#ff5555', '#8be9fd', '#ffb86c', '#6272a4',
@@ -652,30 +753,33 @@ export class CanvasRenderer {
       if (!this.isVisible(pos.x, pos.y, size * 2, w, h)) continue;
 
       const isHub = hubNodes.has(node.id);
-      if (zoom < 0.3 && !isHub) continue;
+      // Minimum visible radius when zoomed out.
+      const drawSize = Math.max(size, 2 / zoom);
 
       const isHighlighted = this.highlightedNodes.has(node.id);
-      const inFocus =
-        activeId == null || node.id === activeId || (focusNeighbors?.has(node.id) ?? false);
-      ctx.globalAlpha = isHighlighted ? 1 : (inFocus ? 1 : 0.15);
+      const inFocus = nodeInFocus(node.id);
+      // Full opacity for focused/searched nodes, dim others.
+      ctx.globalAlpha = isHighlighted || node.focus ? 1 : (inFocus ? 1 : 0.15);
 
       const colorIdx = (node.community ?? 0) % communityColors.length;
 
       ctx.beginPath();
-      ctx.arc(pos.x, pos.y, size, 0, Math.PI * 2);
+      ctx.arc(pos.x, pos.y, drawSize, 0, Math.PI * 2);
 
       if (this.hoveredNode?.id === node.id || node.id === this.selectedNodeId) {
         ctx.fillStyle = '#ffffff';
         ctx.shadowColor = '#ffffff';
         ctx.shadowBlur = 15;
-      } else if (node.focus) {
-        ctx.fillStyle = '#50fa7b';
-        ctx.shadowColor = '#50fa7b';
-        ctx.shadowBlur = 12;
       } else if (isHighlighted) {
         ctx.fillStyle = '#f1fa8c';
         ctx.shadowColor = '#f1fa8c';
         ctx.shadowBlur = 12 + 4 * Math.sin(Date.now() / 300);
+      } else if (node.focus) {
+        // Changed node: brightened community color with steady glow (no ring/blink).
+        const base = communityColors[colorIdx];
+        ctx.fillStyle = this.lighten(base, 0.55);
+        ctx.shadowColor = base;
+        ctx.shadowBlur = 20;
       } else {
         ctx.fillStyle = communityColors[colorIdx];
         ctx.shadowColor = communityColors[colorIdx];
@@ -687,21 +791,24 @@ export class CanvasRenderer {
 
       if (this.pinnedNodes.has(node.id)) {
         ctx.beginPath();
-        ctx.arc(pos.x, pos.y, size + 4, 0, Math.PI * 2);
+        ctx.arc(pos.x, pos.y, drawSize + 4, 0, Math.PI * 2);
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
         ctx.lineWidth = 1.5;
         ctx.stroke();
       }
 
-      const labelByFocus = activeId != null && inFocus;
+      const labelByFocus = focusActive && inFocus;
       const isProminent = isHub || size >= 9;
-      if (labelByFocus || zoom >= 1.4 || (zoom >= 0.45 && isProminent)) {
+      const area = w * h;
+      const baseArea = 1200 * 800;
+      const prominentLabelZoom = 0.45 * Math.min(1, baseArea / area);
+      if (labelByFocus || zoom >= 1.4 || (zoom >= prominentLabelZoom && isProminent)) {
         const label = node.label || node.id;
         const { img, w: lw, h: lh } = this.getLabelImage(label);
         const targetPx = Math.max(9, 11 / Math.max(0.5, zoom));
         const s = targetPx / CanvasRenderer.LABEL_FONT_PX;
         const dw = lw * s, dh = lh * s;
-        ctx.drawImage(img, pos.x - dw / 2, pos.y + size + 12, dw, dh);
+        ctx.drawImage(img, pos.x - dw / 2, pos.y + drawSize + 12, dw, dh);
       }
 
       ctx.globalAlpha = 1;

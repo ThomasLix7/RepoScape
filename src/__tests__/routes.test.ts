@@ -20,7 +20,7 @@ function makeMockCompiler(nodes: GraphNode[] = [], edges: GraphEdge[] = []) {
     compile: async () => ({ nodes, edges }),
     compileAndDiff: async () => ({
       graph: { nodes, edges },
-      diff: { addedNodes: [], removedNodes: [], updatedNodes: [], addedEdges: [], removedEdges: [] },
+      diff: { addedNodes: [], removedNodes: [], updatedNodes: [], addedEdges: [], updatedEdges: [], removedEdges: [] },
     }),
   } as unknown as GraphCompiler;
 }
