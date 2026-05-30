@@ -437,10 +437,16 @@ export class GraphCompiler {
       allEdges.filter((e) => e.type === 'PHYSICAL')
     );
 
+    // Include doc->concept 'contains' edges so docs cluster with their concepts.
+    const containsEdges = allEdges.filter(
+      (e) => e.type === 'COGNITIVE' && e.relation === 'contains'
+    );
+    const clusteringEdges = [...physicalEdges, ...containsEdges];
+
     try {
       const newCommunities = runLouvainClustering(
         Array.from(this.nodes.keys()),
-        physicalEdges
+        clusteringEdges
       );
       this.communities = stabilizeCommunities(newCommunities, this.communities);
       for (const [nodeId, communityId] of this.communities.entries()) {
