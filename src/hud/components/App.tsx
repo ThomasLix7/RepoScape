@@ -12,8 +12,64 @@ const FOCUS_TTL_MS = 8000;
 // so the voice lands on a view that has already arrived ("指哪说哪").
 const BEAT_SPEAK_DELAY_MS = 400;
 
+// Tour control buttons live inside the subtitle box (icon + text).
+const tourBtnStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
+  padding: '8px 14px',
+  borderRadius: 999,
+  border: '1px solid #00f3ff',
+  background: 'rgba(0,243,255,0.12)',
+  color: '#00f3ff',
+  font: '600 13px system-ui, sans-serif',
+  whiteSpace: 'nowrap',
+  cursor: 'pointer',
+};
+
+// Filled variant used to highlight the primary action (resume after a pause).
+const tourBtnPrimaryStyle: React.CSSProperties = {
+  ...tourBtnStyle,
+  background: '#00f3ff',
+  color: '#0d1117',
+};
+
 function getToken(): string {
   return INITIAL_TOKEN;
+}
+
+function renderRichSubtitle(text: string) {
+  if (!text) return null;
+  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g);
+  return parts.map((part, index) => {
+    if (part.startsWith('`') && part.endsWith('`')) {
+      return (
+        <code
+          key={index}
+          style={{
+            fontFamily: 'SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace',
+            background: 'rgba(0, 243, 255, 0.18)',
+            border: '1px solid rgba(0, 243, 255, 0.35)',
+            borderRadius: '4px',
+            padding: '1px 5px',
+            margin: '0 3px',
+            color: '#00f3ff',
+            fontSize: '92%',
+          }}
+        >
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return (
+        <strong key={index} style={{ color: '#ffffff', fontWeight: '700', textShadow: '0 0 8px rgba(255,255,255,0.2)' }}>
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    return part;
+  });
 }
 
 export function App() {
@@ -38,8 +94,10 @@ export function App() {
   // (browsers block speechSynthesis until a user gesture).
   const [loadedTour, setLoadedTour] = useState<Tour | null>(null);
   const [tourActive, setTourActive] = useState(false);
+  const [paused, setPaused] = useState(false);
   const [subtitle, setSubtitle] = useState('');
   const tourRef = useRef<{ beats: Tour['beats']; idx: number } | null>(null);
+  const pausedRef = useRef(false);
   const beatTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -142,8 +200,10 @@ export function App() {
     if (!t) return;
     if (t.idx >= t.beats.length) {
       tourRef.current = null;
+      pausedRef.current = false;
       applyFocusByIds(new Set());
       setTourActive(false);
+      setPaused(false);
       setSubtitle('');
       return;
     }
@@ -154,7 +214,7 @@ export function App() {
 
     let advanced = false;
     const advance = () => {
-      if (advanced || tourRef.current !== t) return;
+      if (advanced || tourRef.current !== t || pausedRef.current) return;
       advanced = true;
       if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
       t.idx += 1;
@@ -168,7 +228,9 @@ export function App() {
       const synth = typeof window !== 'undefined' ? window.speechSynthesis : undefined;
       const estMs = Math.max(2500, beat.say.length * 90);
       if (synth) {
-        const utter = new SpeechSynthesisUtterance(beat.say);
+        // Strip markdown backticks and asterisks to ensure clean voice synthesis without symbol narration
+        const cleanSpeechText = beat.say.replace(/[`*]/g, '');
+        const utter = new SpeechSynthesisUtterance(cleanSpeechText);
         if (beat.lang) utter.lang = beat.lang;
         utter.onend = advance;
         utter.onerror = advance;
@@ -190,22 +252,46 @@ export function App() {
     if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
     applyFocusByIds(new Set());
     setTourActive(false);
+    setPaused(false);
+    pausedRef.current = false;
     setSubtitle('');
     setLoadedTour(tour);
   }, [applyFocusByIds]);
 
-  const stopTour = useCallback(() => {
-    tourRef.current = null;
+  // Pause freezes the tour on the current beat: cancel in-flight speech and timers
+  // but keep tourRef/idx so resume can pick up the same beat.
+  const pauseTour = useCallback(() => {
+    pausedRef.current = true;
     if (typeof window !== 'undefined') window.speechSynthesis?.cancel();
     if (beatTimerRef.current) { clearTimeout(beatTimerRef.current); beatTimerRef.current = null; }
     if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
-    applyFocusByIds(new Set());
-    setTourActive(false);
-    setSubtitle('');
-  }, [applyFocusByIds]);
+    setPaused(true);
+  }, []);
+
+  const resumeTour = useCallback(() => {
+    if (!tourRef.current) return;
+    pausedRef.current = false;
+    setPaused(false);
+    playBeat();
+  }, [playBeat]);
 
   const startTour = useCallback(() => {
     if (!loadedTour) return;
+    pausedRef.current = false;
+    setPaused(false);
+    tourRef.current = { beats: loadedTour.beats, idx: 0 };
+    setTourActive(true);
+    playBeat();
+  }, [loadedTour, playBeat]);
+
+  // Replay restarts from the first beat, cancelling anything currently in flight.
+  const replayTour = useCallback(() => {
+    if (!loadedTour) return;
+    if (typeof window !== 'undefined') window.speechSynthesis?.cancel();
+    if (beatTimerRef.current) { clearTimeout(beatTimerRef.current); beatTimerRef.current = null; }
+    if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
+    pausedRef.current = false;
+    setPaused(false);
     tourRef.current = { beats: loadedTour.beats, idx: 0 };
     setTourActive(true);
     playBeat();
@@ -444,34 +530,9 @@ export function App() {
         ref={canvasRef}
         style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'block', cursor: 'grab' }}
       />
-      {tourActive && subtitle && (
-        <div
-          style={{
-            position: 'fixed',
-            bottom: 76,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            zIndex: 10,
-            maxWidth: 'min(720px, 70vw)',
-            padding: '14px 22px',
-            borderRadius: 16,
-            border: '1px solid rgba(0,243,255,0.35)',
-            background: 'rgba(13,17,23,0.55)',
-            backdropFilter: 'blur(12px)',
-            WebkitBackdropFilter: 'blur(12px)',
-            color: '#e6edf3',
-            font: '500 17px/1.5 system-ui, sans-serif',
-            textAlign: 'center',
-            boxShadow: '0 8px 32px rgba(0,0,0,0.45)',
-            pointerEvents: 'none',
-          }}
-        >
-          {subtitle}
-        </div>
-      )}
-      {(loadedTour || tourActive) && (
+      {loadedTour && !tourActive && (
         <button
-          onClick={tourActive ? stopTour : startTour}
+          onClick={startTour}
           style={{
             position: 'fixed',
             bottom: 24,
@@ -481,15 +542,61 @@ export function App() {
             padding: '10px 20px',
             borderRadius: 999,
             border: '1px solid #00f3ff',
-            background: tourActive ? 'rgba(13,17,23,0.85)' : '#00f3ff',
-            color: tourActive ? '#00f3ff' : '#0d1117',
+            background: '#00f3ff',
+            color: '#0d1117',
             font: '600 14px system-ui, sans-serif',
             cursor: 'pointer',
             boxShadow: '0 2px 16px rgba(0,243,255,0.35)',
           }}
         >
-          {tourActive ? '⏹ Stop Tour' : `▶ Play Tour (${loadedTour?.beats.length || 0})`}
+          {`▶ Play Tour (${loadedTour.beats.length})`}
         </button>
+      )}
+      {tourActive && (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: 24,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 10,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 18,
+            width: 'min(860px, 88vw)',
+            padding: '12px 14px 12px 22px',
+            borderRadius: 16,
+            border: '1px solid rgba(0,243,255,0.35)',
+            background: 'rgba(13,17,23,0.6)',
+            backdropFilter: 'blur(12px)',
+            WebkitBackdropFilter: 'blur(12px)',
+            color: '#e6edf3',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.45)',
+            animation: 'tourBoxIn 260ms cubic-bezier(0.16, 1, 0.3, 1)',
+          }}
+        >
+          <span
+            style={{
+              flex: 1,
+              minWidth: 0,
+              font: '500 17px/1.5 system-ui, sans-serif',
+              textAlign: 'left',
+            }}
+          >
+            {renderRichSubtitle(subtitle)}
+          </span>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0 }}>
+            <button
+              onClick={paused ? resumeTour : pauseTour}
+              style={paused ? tourBtnPrimaryStyle : tourBtnStyle}
+            >
+              {paused ? '▶ Resume' : '⏸ Pause'}
+            </button>
+            <button onClick={replayTour} style={tourBtnStyle}>
+              ↻ Replay
+            </button>
+          </div>
+        </div>
       )}
       <Sidebar
         status={status}

@@ -5,7 +5,7 @@ description: "Use when extracting RepoScape cognitive graph insights, answering 
 
 # RepoScape Agent Skill
 
-RepoScape is a local codebase graph daemon and visual HUD. The daemon owns deterministic workspace telemetry such as file watching, graph recompilation, WebSocket graph diffs, and session security. The agent should use this skill only for work that needs language-model judgment: cognitive graph extraction, topology-aware architecture analysis, and occasional high-level milestone updates.
+RepoScape is a local codebase graph daemon and visual HUD. The daemon owns deterministic workspace telemetry such as file watching, graph recompilation, WebSocket graph diffs, and session security. The agent should use this skill only for work that needs language-model judgment: cognitive graph extraction, topology-aware architecture analysis, narrated tours that speak and highlight the answer in the HUD (the default for architecture questions when the daemon is live), and occasional high-level milestone updates.
 
 Do not manually send high-frequency focus or activity events for every file read, cursor movement, or edit. Those signals belong in IDE extensions, harness/tool wrappers, or the RepoScape daemon itself.
 
@@ -213,14 +213,23 @@ Workflow:
 5. Report concrete paths, hubs, cycles, and affected files with clickable local file links.
 6. State whether the answer came from live RepoScape graph data or offline source inspection.
 
-### Narrated Tour (optional, only when the daemon is live)
+### Narrated Tour (default when the daemon is live)
 
-After composing the textual answer you MAY drive a synchronized narration: the HUD speaks
+After composing the textual answer you SHOULD drive a synchronized narration: the HUD speaks
 each line aloud while highlighting the node(s) it is about and moving the camera to them. The
 textual answer still prints in chat as normal — the tour is an additive layer, not a replacement.
 
-Emit a tour only when the Execution Guard passed and you already hold the Step-1
-`GET /api/graph` result. Skip it silently if the daemon is offline.
+This is the **default** for architecture answers, not an optional extra. Whenever the Execution
+Guard passed and you already hold the Step-1 `GET /api/graph` result, emit a tour. Skip it only
+when one of these holds — and a skip needs one of these reasons:
+
+- the answer touches a single node, so a tour adds nothing;
+- the user has said they don't want voice / narration.
+
+Offline is not a separate case here — the Execution Guard already governs it: an explicit
+`/reposcape` bootstraps the daemon first (so by this step health has passed and the tour runs),
+and a passive offline answer already notes the skip per the Guard. Either way you never drop the
+tour silently.
 
 Build an ordered list of **beats**. Each beat is one short spoken sentence plus the **exact**
 node ids it covers:
@@ -229,25 +238,37 @@ node ids it covers:
   with insight ingestion, a wrong id is silently skipped (the HUD ignores ids it can't find);
   unlike ingestion it does not drop siblings, but the beat will simply highlight nothing.
 - Keep each `say` to ~one sentence so the highlight cadence feels natural.
+- **Short per beat, never shallow overall.** One-sentence brevity governs each
+  `say`, not the tour's depth. The beat list must walk through **every core
+  module or intent your textual answer names** — if the prose covers security,
+  the AST strategy, the heartbeat, and contains-edge clustering, each gets its
+  own beat with the camera on it. A skeleton that collapses a broad architecture
+  answer into a handful of high-level beats is a failure, not a concise success.
+  Let the textual answer's coverage set the beat count, never a target length.
 - To make a *relationship* light up, put **both** endpoint ids in the same beat — the HUD
   auto-highlights the edge between two focused nodes.
-- `lang` is optional per beat (e.g. `"zh-CN"`, `"en-US"`); omit to use the HUD's default voice.
+- Set `lang` on every beat to the BCP 47 tag of the language you wrote that `say` text in —
+  you authored the text, so you know it: `"zh-CN"` for Chinese, `"en-US"` for English,
+  `"ja-JP"`, `"fr-FR"`, etc. Match the conversation language. Omitting falls back to the HUD's
+  default voice, which mispronounces text in any other language, so only omit if you genuinely
+  cannot tell.
 
 Then `POST http://localhost:5173/api/tour` (with the bearer token):
 
 ```json
 {
   "beats": [
-    { "say": "入口在 daemon.ts，它启动了 watcher 和 websocket。",
+    { "say": "入口在 daemon.ts，它启动了 watcher 和 websocket。", "lang": "zh-CN",
       "nodes": ["<exact id from GET /api/graph>", "<exact websocket id>"] },
-    { "say": "路由层把图查询和聚合都收口在 routes.ts。",
+    { "say": "路由层把图查询和聚合都收口在 routes.ts。", "lang": "zh-CN",
       "nodes": ["<exact routes id>"] }
   ]
 }
 ```
 
-A `200 { ok: true }` means the tour was broadcast; the HUD shows a one-click "▶ 播放讲解"
-button (browsers require a user gesture before speaking) and then plays the beats in order.
+A `200 { ok: true }` means the tour was broadcast; the HUD shows a one-click
+`▶ Play Tour (N)` button — N is the beat count — (browsers require a user gesture before
+speaking) and then plays the beats in order, toggling to `⏹ Stop Tour` while it runs.
 
 ## Integration Hooks
 
