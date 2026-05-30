@@ -2,7 +2,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { IncomingMessage } from 'http';
 import { Server } from 'http';
 import crypto from 'crypto';
-import { GraphDiff, WSMessage } from './types.js';
+import { GraphDiff, WSMessage, Tour } from './types.js';
 import { getSessionToken } from './security.js';
 
 export class HUDWebSocketServer {
@@ -67,6 +67,17 @@ export class HUDWebSocketServer {
 
   broadcastFocus(event: { file: string; activity?: string; impacted_nodes?: string[] }): void {
     const msg: WSMessage = { type: 'focus', focus: event };
+    const payload = JSON.stringify(msg);
+
+    for (const client of this.clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(payload);
+      }
+    }
+  }
+
+  broadcastTour(tour: Tour): void {
+    const msg: WSMessage = { type: 'tour', tour };
     const payload = JSON.stringify(msg);
 
     for (const client of this.clients) {

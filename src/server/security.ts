@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
 import { Request, Response, NextFunction } from 'express';
-import { CognitiveChunk } from './types.js';
+import { CognitiveChunk, Tour } from './types.js';
 
 let sessionToken = '';
 
@@ -82,6 +82,18 @@ function isValidEdgeMetadata(metadata: any): boolean {
   for (const key of keys) {
     if (!allowed.has(key)) return false;
     if (typeof metadata[key] !== 'string') return false;
+  }
+  return true;
+}
+
+export function validateTour(body: any): body is Tour {
+  if (!body || typeof body !== 'object') return false;
+  if (!Array.isArray(body.beats) || body.beats.length === 0) return false;
+  for (const beat of body.beats) {
+    if (!beat || typeof beat !== 'object') return false;
+    if (typeof beat.say !== 'string' || !beat.say.trim()) return false;
+    if (!Array.isArray(beat.nodes) || beat.nodes.some((n: any) => typeof n !== 'string')) return false;
+    if (beat.lang !== undefined && typeof beat.lang !== 'string') return false;
   }
   return true;
 }

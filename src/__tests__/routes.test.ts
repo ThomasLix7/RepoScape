@@ -211,6 +211,62 @@ describe('Routes', () => {
     });
   });
 
+  describe('POST /api/tour', () => {
+    it('should accept a valid tour and invoke the broadcast callback', async () => {
+      const app4 = express();
+      app4.use(express.json());
+      const compiler4 = makeMockCompiler();
+      let broadcastedTour: any = null;
+      const handle4 = createRoutes(projectRoot, compiler4, undefined, undefined, (tour) => {
+        broadcastedTour = tour;
+      });
+      app4.use(handle4.router);
+
+      const server4 = createServer(app4);
+      await new Promise<void>((resolve) => server4.listen(0, () => resolve()));
+      const addr4 = server4.address();
+      const port4 = typeof addr4 === 'object' && addr4 ? addr4.port : 0;
+      const base4 = `http://127.0.0.1:${port4}`;
+
+      const res = await fetch(`${base4}/api/tour`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          beats: [
+            { say: 'Entry point is the daemon.', nodes: ['node_a', 'node_b'] },
+            { say: 'It starts the websocket.', nodes: ['node_c'], lang: 'en-US' },
+          ],
+        }),
+      });
+      const body = await res.json();
+      expect(res.status).toBe(200);
+      expect(body.ok).toBe(true);
+      expect(broadcastedTour).not.toBeNull();
+      expect(broadcastedTour.beats).toHaveLength(2);
+
+      handle4.cleanup();
+      server4.close();
+    });
+
+    it('should reject a tour with no beats', async () => {
+      const res = await fetch(`${baseUrl}/api/tour`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ beats: [] }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('should reject a beat missing say or nodes', async () => {
+      const res = await fetch(`${baseUrl}/api/tour`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ beats: [{ say: 'no nodes field' }] }),
+      });
+      expect(res.status).toBe(400);
+    });
+  });
+
   describe('POST /api/insights/batch', () => {
     it('should return refresh: cache_only when no broadcast function', async () => {
       const app2 = express();

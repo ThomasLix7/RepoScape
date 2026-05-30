@@ -90,11 +90,22 @@ export interface GraphDiff {
   hubNodes?: string[];
 }
 
+export interface TourBeat {
+  say: string;
+  nodes: string[];
+  lang?: string;
+}
+
+export interface Tour {
+  beats: TourBeat[];
+}
+
 export interface WSMessage {
-  type: 'ping' | 'pong' | 'diff' | 'full_graph' | 'focus';
+  type: 'ping' | 'pong' | 'diff' | 'full_graph' | 'focus' | 'tour';
   diff?: GraphDiff;
   graph?: { nodes: GraphNode[]; edges: GraphEdge[]; hubNodes?: string[] };
   focus?: { file: string; activity?: string; impacted_nodes?: string[] };
+  tour?: Tour;
 }
 
 export interface FocusEvent {

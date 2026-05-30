@@ -2,11 +2,11 @@ import { Router, Request, Response } from 'express';
 import fs from 'fs/promises';
 import path from 'path';
 import { authMiddleware } from './security.js';
-import { validateCognitiveChunk } from './security.js';
+import { validateCognitiveChunk, validateTour } from './security.js';
 import { writeCacheAtomic, ensureDir, hashSourceFile } from './cache.js';
 import { GraphCompiler } from './compiler.js';
 import { appendErrorLog } from './logger.js';
-import { FocusEvent, BatchInsightsRequest, GraphDiff } from './types.js';
+import { FocusEvent, BatchInsightsRequest, GraphDiff, Tour } from './types.js';
 
 export interface RoutesHandle {
   router: Router;
@@ -20,7 +20,8 @@ export function createRoutes(
   projectRoot: string,
   compiler: GraphCompiler,
   broadcastDiff?: (diff: GraphDiff) => void,
-  broadcastFocus?: (event: { file: string; activity?: string; impacted_nodes?: string[] }) => void
+  broadcastFocus?: (event: { file: string; activity?: string; impacted_nodes?: string[] }) => void,
+  broadcastTour?: (tour: Tour) => void
 ): RoutesHandle {
   const router = Router();
 
@@ -95,6 +96,19 @@ export function createRoutes(
       }
     }
     res.json({ focus: active });
+  });
+
+  router.post('/api/tour', (req: Request, res: Response) => {
+    try {
+      if (!validateTour(req.body)) {
+        res.status(400).json({ error: 'Invalid tour: expected { beats: [{ say, nodes[] }] }' });
+        return;
+      }
+      if (broadcastTour) broadcastTour(req.body);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   router.post('/api/insights/batch', async (req: Request, res: Response) => {

@@ -264,6 +264,8 @@ async function main(): Promise<void> {
     wsServer.broadcastDiff(diff);
   }, (event) => {
     wsServer.broadcastFocus(event);
+  }, (tour) => {
+    wsServer.broadcastTour(tour);
   });
   app.use(router);
 
