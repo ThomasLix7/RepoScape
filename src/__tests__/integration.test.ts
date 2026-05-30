@@ -40,6 +40,7 @@ describe('Integration — Acceptance Gate', () => {
     const { diff } = await compiler.compileAndDiff();
 
     expect(diff.addedEdges.length).toBe(0);
+    expect(diff.updatedEdges.length).toBe(0);
     expect(diff.removedEdges.length).toBe(0);
     expect(diff.removedNodes.length).toBe(0);
   });

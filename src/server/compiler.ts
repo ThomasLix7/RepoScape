@@ -55,8 +55,19 @@ export function diffGraphs(
   curr: { nodes: GraphNode[]; edges: GraphEdge[] }
 ): GraphDiff {
   const newNodesMap = new Map(curr.nodes.map((n) => [n.id, n]));
+
+  const getEdgeMapKey = (edge: GraphEdge): string => {
+    if (edge.type === 'COGNITIVE') {
+      return `cog_${edge.source}->${edge.target}_${edge.relation}`;
+    }
+    if (edge.type === 'SUSPICIOUS') {
+      return `sus_${edge.source}->${edge.target}`;
+    }
+    return `${edge.source}->${edge.target}_${edge.relation}`;
+  };
+
   const newEdgesMap = new Map(
-    curr.edges.map((e) => [`${e.source}->${e.target}_${e.relation}`, e])
+    curr.edges.map((e) => [getEdgeMapKey(e), e])
   );
 
   const addedNodes = curr.nodes.filter((n) => !prev.nodes.has(n.id));
@@ -69,11 +80,17 @@ export function diffGraphs(
     .map((n) => ({ ...n }));
 
   const addedEdges = curr.edges.filter(
-    (e) => !prev.edges.has(`${e.source}->${e.target}_${e.relation}`)
+    (e) => !prev.edges.has(getEdgeMapKey(e))
   );
+  // Re-emit edges whose payload (e.g. SUSPICIOUS score) changed while their key is stable;
+  // there is no key churn to surface these otherwise.
+  const updatedEdges = curr.edges.filter((e) => {
+    const old = prev.edges.get(getEdgeMapKey(e));
+    return old && JSON.stringify(old) !== JSON.stringify(e);
+  });
   const removedEdges = [...prev.edges.keys()].filter((key) => !newEdgesMap.has(key));
 
-  return { addedNodes, removedNodes, updatedNodes, addedEdges, removedEdges };
+  return { addedNodes, removedNodes, updatedNodes, addedEdges, updatedEdges, removedEdges };
 }
 
 export class GraphCompiler {
@@ -433,6 +450,13 @@ export class GraphCompiler {
       await this.savePersistedCommunities();
     } catch (err: any) {
       await appendErrorLog(this.projectRoot, `Louvain clustering failed: ${err.message}`);
+    }
+
+    // Final pruning pass to ensure absolutely no dangling edges (physical or cognitive) remain in the final graph.
+    for (const [key, edge] of this.edges.entries()) {
+      if (!this.nodes.has(edge.source) || !this.nodes.has(edge.target)) {
+        this.edges.delete(key);
+      }
     }
 
     await fs.writeFile(statIndexPath, JSON.stringify(newStatIndex, null, 2), 'utf-8');
@@ -934,7 +958,11 @@ export class GraphCompiler {
           if (chunk.edges && Array.isArray(chunk.edges)) {
             const validNodeIds = new Set(validNodes.map((n: any) => n.id));
             for (const edge of chunk.edges) {
-              if (validNodeIds.has(edge.source) && validNodeIds.has(edge.target)) {
+              // Asymmetric pruning: Concept and doc targets must exist locally within this chunk.
+              // Physical code nodes are resolved globally during compilation, so they are exempted from local pruning.
+              const isTargetCodeNode = edge.target && typeof edge.target === 'string' &&
+                !edge.target.startsWith('concept_') && !edge.target.startsWith('doc_');
+              if (validNodeIds.has(edge.source) && (validNodeIds.has(edge.target) || isTargetCodeNode)) {
                 validEdges.push(edge);
               } else {
                 modified = true;

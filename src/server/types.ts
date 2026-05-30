@@ -85,6 +85,7 @@ export interface GraphDiff {
   removedNodes: string[];
   updatedNodes: Partial<GraphNode>[];
   addedEdges: GraphEdge[];
+  updatedEdges: GraphEdge[];
   removedEdges: string[];
   hubNodes?: string[];
 }
