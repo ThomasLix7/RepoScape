@@ -213,6 +213,42 @@ Workflow:
 5. Report concrete paths, hubs, cycles, and affected files with clickable local file links.
 6. State whether the answer came from live RepoScape graph data or offline source inspection.
 
+### Narrated Tour (optional, only when the daemon is live)
+
+After composing the textual answer you MAY drive a synchronized narration: the HUD speaks
+each line aloud while highlighting the node(s) it is about and moving the camera to them. The
+textual answer still prints in chat as normal — the tour is an additive layer, not a replacement.
+
+Emit a tour only when the Execution Guard passed and you already hold the Step-1
+`GET /api/graph` result. Skip it silently if the daemon is offline.
+
+Build an ordered list of **beats**. Each beat is one short spoken sentence plus the **exact**
+node ids it covers:
+
+- Resolve every id from the live graph — copy the precise `id`, never invent or guess one. As
+  with insight ingestion, a wrong id is silently skipped (the HUD ignores ids it can't find);
+  unlike ingestion it does not drop siblings, but the beat will simply highlight nothing.
+- Keep each `say` to ~one sentence so the highlight cadence feels natural.
+- To make a *relationship* light up, put **both** endpoint ids in the same beat — the HUD
+  auto-highlights the edge between two focused nodes.
+- `lang` is optional per beat (e.g. `"zh-CN"`, `"en-US"`); omit to use the HUD's default voice.
+
+Then `POST http://localhost:5173/api/tour` (with the bearer token):
+
+```json
+{
+  "beats": [
+    { "say": "入口在 daemon.ts，它启动了 watcher 和 websocket。",
+      "nodes": ["<exact id from GET /api/graph>", "<exact websocket id>"] },
+    { "say": "路由层把图查询和聚合都收口在 routes.ts。",
+      "nodes": ["<exact routes id>"] }
+  ]
+}
+```
+
+A `200 { ok: true }` means the tour was broadcast; the HUD shows a one-click "▶ 播放讲解"
+button (browsers require a user gesture before speaking) and then plays the beats in order.
+
 ## Integration Hooks
 
 The following endpoints exist for IDE or harness integrations. They are not mandatory agent duties.
