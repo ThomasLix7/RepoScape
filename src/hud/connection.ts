@@ -37,11 +37,22 @@ export interface GraphDiff {
   hubNodes?: string[];
 }
 
+export interface TourBeat {
+  say: string;
+  nodes: string[];
+  lang?: string;
+}
+
+export interface Tour {
+  beats: TourBeat[];
+}
+
 export interface WSMessage {
-  type: 'ping' | 'pong' | 'diff' | 'full_graph' | 'focus';
+  type: 'ping' | 'pong' | 'diff' | 'full_graph' | 'focus' | 'tour';
   diff?: GraphDiff;
   graph?: { nodes: GraphNode[]; edges: GraphEdge[]; hubNodes?: string[] };
   focus?: { file: string; activity?: string; impacted_nodes?: string[] };
+  tour?: Tour;
 }
 
 export interface HUDConnection {
@@ -53,7 +64,8 @@ export function connectHUD(
   onDiff: (diff: GraphDiff) => void,
   onFullGraph: (graph: { nodes: GraphNode[]; edges: GraphEdge[]; hubNodes?: string[] }) => void,
   onStatusChange: (status: string, attemptsLeft?: number) => void,
-  onFocus?: (event: { file: string; activity?: string; impacted_nodes?: string[] }) => void
+  onFocus?: (event: { file: string; activity?: string; impacted_nodes?: string[] }) => void,
+  onTour?: (tour: Tour) => void
 ): HUDConnection {
   let ws: WebSocket | null = null;
   let reconnectDelay = 1000;
@@ -127,6 +139,10 @@ export function connectHUD(
       // Handle focus events
       if (msg.type === 'focus' && msg.focus && onFocus) {
         onFocus(msg.focus);
+      }
+      // Handle narrated tour events
+      if (msg.type === 'tour' && msg.tour && onTour) {
+        onTour(msg.tour);
       }
     };
 

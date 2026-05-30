@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
-import { connectHUD, GraphNode, GraphEdge, GraphDiff, HUDConnection } from '../connection.js';
+import { connectHUD, GraphNode, GraphEdge, GraphDiff, HUDConnection, Tour } from '../connection.js';
 import { CanvasRenderer } from './CanvasRenderer.js';
 import { Sidebar } from './Sidebar.js';
 
@@ -29,6 +29,12 @@ export function App() {
   const [showSuspicious, setShowSuspicious] = useState(true);
 
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Narrated tour: a tour arrives over WS and waits for a one-click start
+  // (browsers block speechSynthesis until a user gesture).
+  const [pendingTour, setPendingTour] = useState<Tour | null>(null);
+  const [tourActive, setTourActive] = useState(false);
+  const tourRef = useRef<{ beats: Tour['beats']; idx: number } | null>(null);
 
   const [activeFileTypes, setActiveFileTypes] = useState<Set<string>>(
     new Set(['code', 'document', 'concept'])
@@ -110,6 +116,78 @@ export function App() {
     );
   }, []);
 
+  // Drive the focus highlight from an explicit set of node ids (the tour path),
+  // as opposed to handleFocus which matches by source_file. Setting focus with no
+  // focusTtl keeps a beat lit until the next beat replaces it (the periodic TTL
+  // sweep only clears nodes that carry a focusTtl).
+  const applyFocusByIds = useCallback((ids: Set<string>) => {
+    setNodes((prev) =>
+      prev.map((n) => {
+        const want = ids.has(n.id);
+        if (want) return n.focus && !n.focusTtl ? n : { ...n, focus: true, focusTtl: undefined };
+        return n.focus ? { ...n, focus: false } : n;
+      })
+    );
+  }, []);
+
+  const playBeat = useCallback(() => {
+    const t = tourRef.current;
+    if (!t) return;
+    if (t.idx >= t.beats.length) {
+      tourRef.current = null;
+      applyFocusByIds(new Set());
+      setTourActive(false);
+      return;
+    }
+    const beat = t.beats[t.idx];
+    // Ids that match no current node are silently skipped (dangling-id safety).
+    applyFocusByIds(new Set(beat.nodes));
+
+    let advanced = false;
+    const advance = () => {
+      if (advanced || tourRef.current !== t) return;
+      advanced = true;
+      t.idx += 1;
+      playBeat();
+    };
+
+    const synth = typeof window !== 'undefined' ? window.speechSynthesis : undefined;
+    const estMs = Math.max(2500, beat.say.length * 90);
+    if (synth) {
+      const utter = new SpeechSynthesisUtterance(beat.say);
+      if (beat.lang) utter.lang = beat.lang;
+      utter.onend = advance;
+      utter.onerror = advance;
+      synth.speak(utter);
+      // Watchdog: if onend never fires (no installed voice, etc.) keep the tour moving.
+      setTimeout(advance, estMs + 8000);
+    } else {
+      setTimeout(advance, estMs);
+    }
+  }, [applyFocusByIds]);
+
+  const handleTour = useCallback((tour: Tour) => {
+    // A new tour interrupts any running one; it waits for a one-click start.
+    if (typeof window !== 'undefined') window.speechSynthesis?.cancel();
+    tourRef.current = null;
+    setTourActive(false);
+    setPendingTour(tour);
+  }, []);
+
+  const startTour = useCallback(() => {
+    if (!pendingTour) return;
+    tourRef.current = { beats: pendingTour.beats, idx: 0 };
+    setPendingTour(null);
+    setTourActive(true);
+    playBeat();
+  }, [pendingTour, playBeat]);
+
+  useEffect(() => {
+    return () => {
+      if (typeof window !== 'undefined') window.speechSynthesis?.cancel();
+    };
+  }, []);
+
   useEffect(() => {
     const token = getToken();
     if (!token) {
@@ -117,11 +195,11 @@ export function App() {
       return;
     }
 
-    const conn = connectHUD(token, handleDiff, handleFullGraph, handleStatusChange, handleFocus);
+    const conn = connectHUD(token, handleDiff, handleFullGraph, handleStatusChange, handleFocus, handleTour);
     connectionRef.current = conn;
 
     return () => conn.close();
-  }, [handleDiff, handleFullGraph, handleStatusChange, handleFocus]);
+  }, [handleDiff, handleFullGraph, handleStatusChange, handleFocus, handleTour]);
 
   // Periodic sweep to clear expired focus highlights.
   useEffect(() => {
@@ -251,6 +329,29 @@ export function App() {
         ref={canvasRef}
         style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'block', cursor: 'grab' }}
       />
+      {(pendingTour || tourActive) && (
+        <button
+          onClick={pendingTour ? startTour : undefined}
+          disabled={!pendingTour}
+          style={{
+            position: 'fixed',
+            bottom: 24,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 10,
+            padding: '10px 20px',
+            borderRadius: 999,
+            border: '1px solid #00f3ff',
+            background: pendingTour ? '#00f3ff' : 'rgba(13,17,23,0.85)',
+            color: pendingTour ? '#0d1117' : '#00f3ff',
+            font: '600 14px system-ui, sans-serif',
+            cursor: pendingTour ? 'pointer' : 'default',
+            boxShadow: '0 2px 16px rgba(0,243,255,0.35)',
+          }}
+        >
+          {pendingTour ? `▶ Play Tour (${pendingTour.beats.length})` : '🔊 Narrating...'}
+        </button>
+      )}
       <Sidebar
         status={status}
         attemptsLeft={attemptsLeft}
