@@ -30,15 +30,21 @@ export class FileWatcher {
   }
 
   start(): void {
-    this.watcher = chokidar.watch(this.watchRoot, {
-      ignored: [
-        /(^|[\/\\])\../,
-        /node_modules/,
-        /\.reposcape/,
-        /dist/,
-        /build/,
-        /\.next/,
-      ],
+    const rulesFile = path.join(this.projectRoot, '.reposcape', 'architecture_rules.json');
+    this.watcher = chokidar.watch([this.watchRoot, rulesFile], {
+      // Ignore dotfiles / build dirs / .reposcape, but allow the radar rules file
+      // back in so editing it re-triggers a compile.
+      ignored: (filePath: string) => {
+        if (filePath === rulesFile) return false;
+        return (
+          /(^|[\/\\])\../.test(filePath) ||
+          /node_modules/.test(filePath) ||
+          /\.reposcape/.test(filePath) ||
+          /dist/.test(filePath) ||
+          /build/.test(filePath) ||
+          /\.next/.test(filePath)
+        );
+      },
       persistent: true,
       ignoreInitial: true,
       awaitWriteFinish: {

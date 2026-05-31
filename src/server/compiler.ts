@@ -8,6 +8,7 @@ import { appendErrorLog } from './logger.js';
 import { hashSourceFile, ensureDir, fileExists, writeCacheAtomic } from './cache.js';
 import { ParserRegistry, initParser, registerDefaultStrategies, resolveGrammarPath } from './parser.js';
 import { detectCycleEdges } from './cycles.js';
+import { detectBoundaryViolations, parseArchitectureRules, ArchitectureRules } from './boundaries.js';
 import { identifyHubNodes, unwrapReexports, ModuleResolver } from './resolver.js';
 import { runLouvainClustering, stabilizeCommunities } from './community.js';
 
@@ -43,6 +44,53 @@ const GENERIC_LABELS = new Set([
   'assign', 'freeze', 'isarray', 'parse', 'stringify',
 ]);
 
+const DERIVED_DOC_METADATA = 'derived_from_concept_source_file';
+const DERIVED_DOC_CONTAINS_RATIONALE = 'Derived from the concept source_file.';
+const COGNITIVE_CLUSTER_WEIGHT = 0.3;
+const COGNITIVE_CLUSTER_RELATIONS = new Set([
+  'rationale_for',
+  'implements',
+  'constrains',
+  'motivates',
+  'contradicts',
+  'references',
+]);
+
+function slugifyDocumentId(sourceFile: string): string {
+  const slug = sourceFile
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return `doc_${slug || 'source'}_${hashSourceFile(sourceFile).slice(0, 8)}`;
+}
+
+export function buildClusteringEdges(allEdges: GraphEdge[]): GraphEdge[] {
+  const clusteringEdges: GraphEdge[] = [];
+
+  for (const edge of allEdges) {
+    if (edge.type === 'PHYSICAL') {
+      clusteringEdges.push(edge);
+      continue;
+    }
+
+    if (edge.type !== 'COGNITIVE') continue;
+
+    if (edge.relation === 'contains') {
+      clusteringEdges.push(edge);
+      continue;
+    }
+
+    if (COGNITIVE_CLUSTER_RELATIONS.has(edge.relation)) {
+      clusteringEdges.push({
+        ...edge,
+        score: edge.score * COGNITIVE_CLUSTER_WEIGHT,
+      });
+    }
+  }
+
+  return clusteringEdges;
+}
+
 function snapshotGraph(nodes: Map<string, GraphNode>, edges: Map<string, GraphEdge>) {
   return {
     nodes: new Map(Array.from(nodes, ([k, v]) => [k, structuredClone(v)])),
@@ -61,7 +109,7 @@ export function diffGraphs(
       return `cog_${edge.source}->${edge.target}_${edge.relation}`;
     }
     if (edge.type === 'SUSPICIOUS') {
-      return `sus_${edge.source}->${edge.target}`;
+      return `sus_${edge.source}->${edge.target}_${edge.relation}`;
     }
     return `${edge.source}->${edge.target}_${edge.relation}`;
   };
@@ -110,6 +158,7 @@ export class GraphCompiler {
   private fileExportsCache: Map<string, Map<string, string | { sourceFile: string; originalSymbol: string } | string[]>> = new Map();
   private isFirstCompile = true;
   private moduleResolver: ModuleResolver;
+  private architectureRules: ArchitectureRules = { boundaries: [] };
 
   constructor(projectRoot: string) {
     this.projectRoot = projectRoot;
@@ -185,6 +234,19 @@ export class GraphCompiler {
     await this.checkCacheVersion();
     await this.loadPersistedCommunities();
     await this.reconciliationScan();
+  }
+
+  // §Radar: load .reposcape/architecture_rules.json. Re-read on every compile so
+  // edits to the rules file (watched specially) take effect on the next pass.
+  async loadArchitectureRules(): Promise<void> {
+    const rulesPath = path.join(this.projectRoot, '.reposcape', 'architecture_rules.json');
+    try {
+      await sandboxPath(rulesPath, this.projectRoot);
+      const raw = await fs.readFile(rulesPath, 'utf-8');
+      this.architectureRules = parseArchitectureRules(JSON.parse(raw));
+    } catch {
+      this.architectureRules = { boundaries: [] };
+    }
   }
 
   // §4.A: Insights migration from cache/insights/ to insights/
@@ -398,7 +460,9 @@ export class GraphCompiler {
       }
     }
 
+    this.clearDerivedDocumentConcepts();
     await this.loadCognitiveInsights(insightsDir);
+    this.deriveDocumentConcepts();
 
     await this.resolveImports(allRawImports);
     this.storedRawImports = allRawImports;
@@ -422,14 +486,44 @@ export class GraphCompiler {
 
     for (const [edgeKey, riskScore] of cycleEdges.entries()) {
       const [src, dst] = edgeKey.split('->');
-      const suspiciousId = `sus_${edgeKey}`;
+      const suspiciousId = `sus_${edgeKey}_circular_dependency`;
       this.edges.set(suspiciousId, {
         source: src,
         target: dst,
         relation: 'circular_dependency',
         type: 'SUSPICIOUS',
         score: riskScore,
+        metadata: {
+          rationale: `Circular dependency: ${this.nodes.get(src)?.label ?? src} ↔ ${this.nodes.get(dst)?.label ?? dst}`,
+        },
       });
+    }
+
+    // §Radar: boundary violations on physical import edges.
+    await this.loadArchitectureRules();
+    if (this.architectureRules.boundaries.length > 0) {
+      const importEdges = physicalEdges
+        .filter((e) => e.relation === 'imports')
+        .map((e) => ({
+          source: e.source,
+          target: e.target,
+          fromFile: this.nodes.get(e.source)?.source_file ?? '',
+          toFile: this.nodes.get(e.target)?.source_file ?? '',
+        }))
+        .filter((e) => e.fromFile && e.toFile);
+
+      const violations = detectBoundaryViolations(importEdges, this.architectureRules);
+      for (const v of violations) {
+        const suspiciousId = `sus_${v.source}->${v.target}_violates_boundary`;
+        this.edges.set(suspiciousId, {
+          source: v.source,
+          target: v.target,
+          relation: 'violates_boundary',
+          type: 'SUSPICIOUS',
+          score: v.score,
+          metadata: { rationale: v.reason },
+        });
+      }
     }
 
     this.hubNodes = identifyHubNodes(
@@ -437,11 +531,7 @@ export class GraphCompiler {
       allEdges.filter((e) => e.type === 'PHYSICAL')
     );
 
-    // Include doc->concept 'contains' edges so docs cluster with their concepts.
-    const containsEdges = allEdges.filter(
-      (e) => e.type === 'COGNITIVE' && e.relation === 'contains'
-    );
-    const clusteringEdges = [...physicalEdges, ...containsEdges];
+    const clusteringEdges = buildClusteringEdges(allEdges);
 
     try {
       const newCommunities = runLouvainClustering(
@@ -876,6 +966,73 @@ export class GraphCompiler {
         }
       }
     } catch {
+    }
+  }
+
+  private clearDerivedDocumentConcepts(): void {
+    for (const [key, edge] of this.edges.entries()) {
+      if (
+        edge.type === 'COGNITIVE' &&
+        edge.relation === 'contains' &&
+        edge.metadata?.rationale === DERIVED_DOC_CONTAINS_RATIONALE
+      ) {
+        this.edges.delete(key);
+      }
+    }
+
+    for (const [id, node] of this.nodes.entries()) {
+      if (node.file_type === 'document' && node.metadata?.derived === DERIVED_DOC_METADATA) {
+        this.nodes.delete(id);
+      }
+    }
+  }
+
+  private deriveDocumentConcepts(): void {
+    const edgeAlreadyExists = (source: string, target: string): boolean => {
+      for (const edge of this.edges.values()) {
+        if (
+          edge.source === source &&
+          edge.target === target &&
+          edge.type === 'COGNITIVE' &&
+          edge.relation === 'contains'
+        ) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    const concepts = Array.from(this.nodes.values()).filter(
+      (node) => node.file_type === 'concept' && node.source_file
+    );
+
+    for (const concept of concepts) {
+      const docId = slugifyDocumentId(concept.source_file);
+      const existing = this.nodes.get(docId);
+
+      if (!existing) {
+        this.nodes.set(docId, {
+          id: docId,
+          label: path.basename(concept.source_file),
+          file_type: 'document',
+          source_file: concept.source_file,
+          metadata: { derived: DERIVED_DOC_METADATA },
+        });
+      } else if (existing.file_type !== 'document') {
+        continue;
+      }
+
+      if (edgeAlreadyExists(docId, concept.id)) continue;
+
+      this.edges.set(`cog_${docId}->${concept.id}_contains`, {
+        source: docId,
+        target: concept.id,
+        relation: 'contains',
+        type: 'COGNITIVE',
+        score: 1.0,
+        source_file: concept.source_file,
+        metadata: { rationale: DERIVED_DOC_CONTAINS_RATIONALE },
+      });
     }
   }
 

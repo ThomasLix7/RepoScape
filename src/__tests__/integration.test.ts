@@ -4,6 +4,7 @@ import fs from 'fs/promises';
 import os from 'os';
 import { GraphCompiler } from '../server/compiler.js';
 import { unwrapReexports } from '../server/resolver.js';
+import { hashSourceFile } from '../server/cache.js';
 import { RawImportEntry } from '../server/types.js';
 
 describe('Integration — Acceptance Gate', () => {
@@ -203,6 +204,56 @@ MyFoo();
 `
     );
 
+    await fs.mkdir(path.join(projectRoot, 'docs'), { recursive: true });
+    await fs.writeFile(
+      path.join(projectRoot, 'docs', 'architecture.md'),
+      'Module A owns the core API used by callers.\n'
+    );
+    await fs.mkdir(path.join(projectRoot, '.reposcape', 'insights'), { recursive: true });
+    await fs.writeFile(
+      path.join(projectRoot, '.reposcape', 'insights', `${hashSourceFile('docs/architecture.md')}.json`),
+      JSON.stringify({
+        nodes: [
+          {
+            id: 'concept_module_a_api',
+            label: 'Module A API',
+            file_type: 'concept',
+            source_file: 'docs/architecture.md',
+          },
+          {
+            id: 'concept_caller_contract',
+            label: 'Caller Contract',
+            file_type: 'concept',
+            source_file: 'docs/architecture.md',
+          },
+        ],
+        edges: [
+          {
+            source: 'concept_module_a_api',
+            target: 'src_a.ts',
+            relation: 'implements',
+            type: 'COGNITIVE',
+            score: 0.9,
+            metadata: {
+              rationale: 'The document describes module A as the API owner.',
+              source_doc: 'docs/architecture.md#L1',
+            },
+          },
+          {
+            source: 'concept_caller_contract',
+            target: 'src_caller.ts',
+            relation: 'constrains',
+            type: 'COGNITIVE',
+            score: 0.8,
+            metadata: {
+              rationale: 'The document describes caller responsibilities.',
+              source_doc: 'docs/architecture.md#L1',
+            },
+          },
+        ],
+      })
+    );
+
     compiler = new GraphCompiler(projectRoot);
     await compiler.init();
     await compiler.compile();
@@ -285,6 +336,39 @@ MyFoo();
       const targetNode = nodeById.get(edge.target);
       expect(targetNode?.source_file).toBe('src/a.ts');
     }
+  });
+
+  it('derives document nodes and contains edges from concept source files', async () => {
+    const graph = await compiler.compile();
+    const doc = graph.nodes.find(
+      (n) => n.file_type === 'document' && n.source_file === 'docs/architecture.md'
+    );
+    const conceptA = graph.nodes.find((n) => n.id === 'concept_module_a_api');
+    const conceptCaller = graph.nodes.find((n) => n.id === 'concept_caller_contract');
+
+    expect(doc).toBeDefined();
+    expect(conceptA).toBeDefined();
+    expect(conceptCaller).toBeDefined();
+    expect(graph.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: doc!.id,
+          target: 'concept_module_a_api',
+          relation: 'contains',
+          type: 'COGNITIVE',
+          score: 1,
+        }),
+        expect.objectContaining({
+          source: doc!.id,
+          target: 'concept_caller_contract',
+          relation: 'contains',
+          type: 'COGNITIVE',
+          score: 1,
+        }),
+      ])
+    );
+    expect(doc!.community).toBe(conceptA!.community);
+    expect(doc!.community).toBe(conceptCaller!.community);
   });
 
   it('§2.G.11a: export default function namedDefault() → defaultExports points at named node', () => {
