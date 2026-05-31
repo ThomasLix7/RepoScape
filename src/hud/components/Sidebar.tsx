@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { GraphNode, GraphEdge, CommunitySummary, NeighborsContext } from '../connection.js';
+import { groupWarningEdges } from '../warningGroups.js';
 import { AccordionSection } from './AccordionSection.js';
 
 interface SidebarProps {
@@ -7,6 +8,8 @@ interface SidebarProps {
   attemptsLeft: number;
   selectedNode: GraphNode | null;
   selectedEdge: GraphEdge | null;
+  warningEdges: GraphEdge[];
+  nodesById: Map<string, GraphNode>;
   nodeCount: number;
   edgeCount: number;
   showPhysical: boolean;
@@ -19,6 +22,7 @@ interface SidebarProps {
   searchResults: GraphNode[];
   onSearchChange: (q: string) => void;
   onSearchSelect: (nodeId: string) => void;
+  onWarningSelect: (edge: GraphEdge, nodeIds?: string[]) => void;
   activeFileTypes: Set<string>;
   activeCommunities: Set<number> | null;
   pathPrefix: string;
@@ -53,6 +57,8 @@ export function Sidebar({
   attemptsLeft,
   selectedNode,
   selectedEdge,
+  warningEdges,
+  nodesById,
   nodeCount,
   edgeCount,
   showPhysical,
@@ -65,6 +71,7 @@ export function Sidebar({
   searchResults,
   onSearchChange,
   onSearchSelect,
+  onWarningSelect,
   activeFileTypes,
   activeCommunities,
   pathPrefix,
@@ -86,6 +93,11 @@ export function Sidebar({
 
   const hasSelection = selectedNode !== null || selectedEdge !== null;
 
+  const groupedWarnings = useMemo(() => groupWarningEdges(warningEdges), [warningEdges]);
+
+  const warningCount = groupedWarnings.length;
+
+
   // Auto-expand Detail Inspect panel on selection; allow manual collapse.
   useEffect(() => {
     if (hasSelection) {
@@ -97,6 +109,17 @@ export function Sidebar({
       });
     }
   }, [hasSelection]);
+
+  useEffect(() => {
+    if (warningCount > 0) {
+      setExpandedPanels(prev => {
+        if (prev.has(2)) return prev;
+        const next = new Set(prev);
+        next.add(2);
+        return next;
+      });
+    }
+  }, [warningCount]);
 
   const togglePanel = (panel: number) => {
     setExpandedPanels(prev => {
@@ -191,6 +214,16 @@ export function Sidebar({
     if (type === 'COGNITIVE') return '#bd93f9';
     return '#ffb86c';
   };
+
+  const warningColor = (edge: GraphEdge) => edge.score >= 0.8 ? '#ff5555' : '#ffb86c';
+  const warningSeverity = (edge: GraphEdge) => edge.score >= 0.8 ? 'ERROR' : 'WARN';
+  const warningRelationLabel = (edge: GraphEdge) => {
+    if (edge.relation === 'violates_boundary') return 'Boundary violation';
+    if (edge.relation === 'circular_dependency') return 'Circular dependency';
+    return edge.relation;
+  };
+  const nodeLabel = (id: string) => nodesById.get(id)?.label || id;
+  const nodeFile = (id: string) => nodesById.get(id)?.source_file || id;
 
   return (
     <div
@@ -350,6 +383,160 @@ export function Sidebar({
           </ul>
         )}
       </div>
+
+      <AccordionSection
+        title="Radar Alerts"
+        icon="!"
+        isExpanded={expandedPanels.has(2)}
+        onToggle={() => togglePanel(2)}
+        headerRight={
+          <span
+            style={{
+              background: warningCount > 0 ? '#ff555520' : '#30363d',
+              color: warningCount > 0 ? '#ffb86c' : '#8b949e',
+              fontSize: 10,
+              padding: '1px 6px',
+              borderRadius: 10,
+              lineHeight: '16px',
+              border: warningCount > 0 ? '1px solid #ffb86c55' : '1px solid transparent',
+            }}
+          >
+            {warningCount}
+          </span>
+        }
+      >
+        {warningCount === 0 ? (
+          <div style={{ color: '#8b949e', fontSize: 11, padding: '4px 0' }}>
+            No active radar alerts
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {groupedWarnings.map((group) => {
+              if (group.type === 'cycle') {
+                const primaryEdge = group.edges[0];
+                const color = warningColor(primaryEdge);
+                const pathStr = group.cycleNodes.map((id) => nodeLabel(id)).join(' \u2192 ');
+                
+                const isSelected = selectedEdge !== null && group.edges.some(e =>
+                  e.source === selectedEdge.source &&
+                  e.target === selectedEdge.target &&
+                  e.relation === selectedEdge.relation
+                );
+                const bg = isSelected ? `${color}18` : '#0d1117';
+                const borderCol = isSelected ? color : `${color}55`;
+
+                return (
+                  <div
+                    key={group.key}
+                    onClick={() => onWarningSelect(primaryEdge, group.nodeIds)}
+                    style={{
+                      border: `1px solid ${borderCol}`,
+                      borderLeft: `3px solid ${color}`,
+                      borderRadius: 4,
+                      background: bg,
+                      padding: '7px 8px',
+                      cursor: 'pointer',
+                      transition: 'border-color 150ms, background 150ms',
+                    }}
+                    onMouseEnter={e => {
+                      e.currentTarget.style.background = isSelected ? `${color}2a` : '#161b22';
+                      e.currentTarget.style.borderColor = isSelected ? color : `${color}aa`;
+                    }}
+                    onMouseLeave={e => {
+                      e.currentTarget.style.background = bg;
+                      e.currentTarget.style.borderColor = borderCol;
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 5 }}>
+                      <span
+                        style={{
+                          color,
+                          border: `1px solid ${color}66`,
+                          borderRadius: 3,
+                          padding: '1px 4px',
+                          fontSize: 9,
+                          fontWeight: 700,
+                          flexShrink: 0,
+                        }}
+                      >
+                        {warningSeverity(primaryEdge)}
+                      </span>
+                      <span style={{ color: '#f0f6fc', fontSize: 11, fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        Circular Dependency Cycle
+                      </span>
+                    </div>
+                    <div style={{ color: '#c9d1d9', fontSize: 10, lineHeight: 1.35, marginBottom: 6, wordBreak: 'break-all' }}>
+                      {pathStr}
+                    </div>
+                    <div style={{ color: '#8b949e', fontSize: 10, lineHeight: 1.35 }}>
+                      Circular dependency cycle detected between {group.nodeIds.length} files.
+                    </div>
+                  </div>
+                );
+              } else {
+                const edge = group.edges[0];
+                const color = warningColor(edge);
+                const isSelected = selectedEdge !== null && selectedEdge.source === edge.source && selectedEdge.target === edge.target && selectedEdge.relation === edge.relation;
+                const bg = isSelected ? `${color}18` : '#0d1117';
+                const borderCol = isSelected ? color : `${color}55`;
+
+                return (
+                  <div
+                    key={group.key}
+                    onClick={() => onWarningSelect(edge)}
+                    style={{
+                      border: `1px solid ${borderCol}`,
+                      borderLeft: `3px solid ${color}`,
+                      borderRadius: 4,
+                      background: bg,
+                      padding: '7px 8px',
+                      cursor: 'pointer',
+                      transition: 'border-color 150ms, background 150ms',
+                    }}
+                    onMouseEnter={e => {
+                      e.currentTarget.style.background = isSelected ? `${color}2a` : '#161b22';
+                      e.currentTarget.style.borderColor = isSelected ? color : `${color}aa`;
+                    }}
+                    onMouseLeave={e => {
+                      e.currentTarget.style.background = bg;
+                      e.currentTarget.style.borderColor = borderCol;
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 5 }}>
+                      <span
+                        style={{
+                          color,
+                          border: `1px solid ${color}66`,
+                          borderRadius: 3,
+                          padding: '1px 4px',
+                          fontSize: 9,
+                          fontWeight: 700,
+                          flexShrink: 0,
+                        }}
+                      >
+                        {warningSeverity(edge)}
+                      </span>
+                      <span style={{ color: '#f0f6fc', fontSize: 11, fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {warningRelationLabel(edge)}
+                      </span>
+                    </div>
+                    <div style={{ color: '#c9d1d9', fontSize: 10, lineHeight: 1.35, marginBottom: 6 }}>
+                      <span title={nodeFile(edge.source)}>{nodeLabel(edge.source)}</span>
+                      <span style={{ color: '#8b949e' }}> {'\u2192'} </span>
+                      <span title={nodeFile(edge.target)}>{nodeLabel(edge.target)}</span>
+                    </div>
+                    {edge.metadata?.rationale && (
+                      <div style={{ color: '#8b949e', fontSize: 10, lineHeight: 1.35 }}>
+                        {edge.metadata.rationale}
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+            })}
+          </div>
+        )}
+      </AccordionSection>
 
       <AccordionSection
         title="View & Filter"

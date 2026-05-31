@@ -1,4 +1,5 @@
 import { GraphNode, GraphEdge } from '../connection.js';
+import { suppressPhysicalEdgesCoveredBySuspicious } from '../edgeVisibility.js';
 
 interface RenderOptions {
   showPhysical: boolean;
@@ -53,8 +54,10 @@ export class CanvasRenderer {
   private nodeCommunity = new Map<string, number>();
   private adjacency = new Map<string, Set<string>>();
   private selectedNodeId: string | null = null;
+  private selectedEdge: GraphEdge | null = null;
   private edgesSignature = '';
   private userInteracted = false;
+  private didPan = false;
 
   private d3Simulation: any = null;
   private d3Nodes: D3Node[] = [];
@@ -251,6 +254,10 @@ export class CanvasRenderer {
     this.selectedNodeId = id;
   }
 
+  setSelectedEdge(edge: GraphEdge | null): void {
+    this.selectedEdge = edge;
+  }
+
   wakeSimulation(): void {
     if (this.d3Simulation) {
       this.d3Simulation.alpha(0.3).restart();
@@ -264,6 +271,14 @@ export class CanvasRenderer {
     this.camera.targetY = pos.y;
     this.camera.targetZoom = Math.max(this.camera.targetZoom, 1.2);
     this.userInteracted = true;
+  }
+
+  flyToEdge(edge: GraphEdge): void {
+    this.flyToNodes([edge.source, edge.target]);
+  }
+
+  flyToNodes(nodeIds: Iterable<string>): void {
+    this.focusCameraOnNodes(new Set(nodeIds));
   }
 
   setHighlightedNodes(ids: Set<string>): void {
@@ -354,6 +369,7 @@ export class CanvasRenderer {
         }
       } else {
         this.isDragging = true;
+        this.didPan = false;
         this.lastMouse = { x: e.clientX, y: e.clientY };
         this.canvas.style.cursor = 'grabbing';
       }
@@ -371,7 +387,10 @@ export class CanvasRenderer {
       } else if (this.isDragging) {
         const dx = e.clientX - this.lastMouse.x;
         const dy = e.clientY - this.lastMouse.y;
-        if (dx !== 0 || dy !== 0) this.userInteracted = true;
+        if (dx !== 0 || dy !== 0) {
+          this.userInteracted = true;
+          this.didPan = true;
+        }
         this.camera.targetX -= dx / this.camera.zoom;
         this.camera.targetY -= dy / this.camera.zoom;
         this.lastMouse = { x: e.clientX, y: e.clientY };
@@ -389,6 +408,9 @@ export class CanvasRenderer {
         }
         this.draggedNode = null;
         this.didDrag = false;
+      }
+      if (this.isDragging && this.didPan) {
+        this.suppressNextClick = true;
       }
       this.isDragging = false;
       this.canvas.style.cursor = 'grab';
@@ -588,11 +610,23 @@ export class CanvasRenderer {
 
   render(nodes: GraphNode[], edges: GraphEdge[], options: RenderOptions): void {
     const ctx = this.ctx;
-    const w = this.canvas.getBoundingClientRect().width;
-    const h = this.canvas.getBoundingClientRect().height;
+    const rect = this.canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const expectedWidth = Math.floor(rect.width * dpr);
+    const expectedHeight = Math.floor(rect.height * dpr);
+
+    if (this.canvas.width !== expectedWidth || this.canvas.height !== expectedHeight) {
+      this.canvas.width = expectedWidth;
+      this.canvas.height = expectedHeight;
+      this.ctx.scale(dpr, dpr);
+    }
+
+    const w = rect.width;
+    const h = rect.height;
     const hubNodes = options.hubNodes || new Set<string>();
 
-    this.currentEdges = edges;
+    const renderEdges = suppressPhysicalEdgesCoveredBySuspicious(edges, options.showSuspicious);
+    this.currentEdges = renderEdges;
     this.currentOptions = options;
 
     this.recomputeTopology(nodes, edges, hubNodes);
@@ -645,7 +679,8 @@ export class CanvasRenderer {
       this.highlightedNodes.size === 0 && !this.draggedNode;
 
     if (idle) {
-      const fingerprint = `${this.hoveredNode?.id ?? ''}|${this.selectedNodeId ?? ''}|${options.showPhysical ? 1 : 0}${options.showCognitive ? 1 : 0}${options.showSuspicious ? 1 : 0}`;
+      const selEdgeKey = this.selectedEdge ? `${this.selectedEdge.source}->${this.selectedEdge.target}_${this.selectedEdge.relation}` : '';
+      const fingerprint = `${this.hoveredNode?.id ?? ''}|${this.selectedNodeId ?? ''}|${selEdgeKey}|${options.showPhysical ? 1 : 0}${options.showCognitive ? 1 : 0}${options.showSuspicious ? 1 : 0}`;
       if (fingerprint === this.lastFrameHash) {
         this.frameSkipCount++;
         return;
@@ -691,7 +726,15 @@ export class CanvasRenderer {
 
     // Unified focus model: a "core" set (hover/selection, or tour focus) plus its
     // 1-degree neighbors, producing a three-tier visual gradient instead of binary.
-    const coreIds: Set<string> = activeId != null ? new Set([activeId]) : focusedIds;
+    const coreIds = new Set<string>();
+    if (activeId != null) {
+      coreIds.add(activeId);
+    } else if (this.selectedEdge != null) {
+      coreIds.add(this.selectedEdge.source);
+      coreIds.add(this.selectedEdge.target);
+    } else {
+      for (const id of focusedIds) coreIds.add(id);
+    }
     const focusActive = coreIds.size > 0;
     const neighborIds = new Set<string>();
     if (focusActive) {
@@ -712,7 +755,7 @@ export class CanvasRenderer {
     };
 
     if (zoom >= 0.10) {
-      for (const edge of edges) {
+      for (const edge of renderEdges) {
         if (edge.type === 'PHYSICAL' && !options.showPhysical) continue;
         if (edge.type === 'COGNITIVE' && !options.showCognitive) continue;
         if (edge.type === 'SUSPICIOUS' && !options.showSuspicious) continue;
@@ -723,7 +766,7 @@ export class CanvasRenderer {
 
         // -1 = no focus active (show all); else 2 core / 1 neighbor / 0 background.
         const tier = focusActive ? edgeTier(edge) : -1;
-        const a = tier === -1 ? 1 : tier === 2 ? 1 : tier === 1 ? 0.4 : 0.04;
+        const a = tier === -1 ? 1 : tier === 2 ? 1 : tier === 1 ? 0.3 : 0.04;
         const isCore = tier === 2;
 
         ctx.beginPath();

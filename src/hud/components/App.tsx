@@ -84,6 +84,7 @@ export function App() {
   const [attemptsLeft, setAttemptsLeft] = useState(50);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<GraphEdge | null>(null);
+  const [pendingWarningFocus, setPendingWarningFocus] = useState<{ edge: GraphEdge; nodeIds: string[] } | null>(null);
   const [showPhysical, setShowPhysical] = useState(true);
   const [showCognitive, setShowCognitive] = useState(true);
   const [showSuspicious, setShowSuspicious] = useState(true);
@@ -359,6 +360,12 @@ export function App() {
     return edges.filter(e => visibleNodeIds.has(e.source) && visibleNodeIds.has(e.target));
   }, [edges, visibleNodeIds]);
 
+  const warningEdges = useMemo(() => {
+    return edges
+      .filter(e => e.type === 'SUSPICIOUS')
+      .sort((a, b) => b.score - a.score || a.relation.localeCompare(b.relation));
+  }, [edges]);
+
   const searchResults = useMemo(() => {
     if (!searchQuery.trim()) return [];
     const q = searchQuery.toLowerCase();
@@ -452,14 +459,46 @@ export function App() {
       setSelectedNode(null);
       setSelectedEdge(null);
       rendererRef.current?.setSelectedNode(null);
+      rendererRef.current?.setSelectedEdge(null);
       return;
     }
     rendererRef.current?.flyToNode(nodeId);
     rendererRef.current?.setSelectedNode(nodeId);
     setSelectedNode(nodes.find(n => n.id === nodeId) ?? null);
     setSelectedEdge(null);
+    rendererRef.current?.setSelectedEdge(null);
     setSearchQuery('');
   };
+
+  const handleWarningSelect = useCallback((edge: GraphEdge, nodeIds: string[] = [edge.source, edge.target]) => {
+    const focusNodeIds = nodeIds.length > 0 ? nodeIds : [edge.source, edge.target];
+
+    setShowSuspicious(true);
+    setSelectedEdge(edge);
+    setSelectedNode(null);
+    rendererRef.current?.setSelectedNode(null);
+    rendererRef.current?.setSelectedEdge(edge);
+    setSearchQuery('');
+    setPathPrefix('');
+    setActiveCommunities(null);
+    setActiveFileTypes(prev => {
+      const next = new Set(prev);
+      for (const id of focusNodeIds) {
+        const node = nodeMap.get(id);
+        if (node) next.add(node.file_type);
+      }
+      return next;
+    });
+    setPendingWarningFocus({ edge, nodeIds: focusNodeIds });
+  }, [nodeMap]);
+
+  useEffect(() => {
+    if (!pendingWarningFocus) return;
+    const visibleFocusIds = pendingWarningFocus.nodeIds.filter(id => visibleNodeIds.has(id));
+    if (visibleFocusIds.length === 0) return;
+    rendererRef.current?.flyToNodes(visibleFocusIds);
+    setPendingWarningFocus(null);
+  }, [pendingWarningFocus, visibleNodeIds]);
 
   const handleToggleFileType = useCallback((ft: string) => {
     setActiveFileTypes(prev => {
@@ -487,11 +526,13 @@ export function App() {
     renderer.onNodeClick = (node: GraphNode | null) => {
       setSelectedNode(node);
       setSelectedEdge(null);
+      renderer.setSelectedEdge(null);
     };
 
     renderer.onEdgeClick = (edge: GraphEdge | null) => {
       setSelectedEdge(edge);
       setSelectedNode(null);
+      renderer.setSelectedEdge(edge);
     };
 
     let animId: number;
@@ -603,6 +644,8 @@ export function App() {
         attemptsLeft={attemptsLeft}
         selectedNode={selectedNode}
         selectedEdge={selectedEdge}
+        warningEdges={warningEdges}
+        nodesById={nodeMap}
         nodeCount={filteredNodes.length}
         edgeCount={filteredEdges.length}
         showPhysical={showPhysical}
@@ -615,6 +658,7 @@ export function App() {
         searchResults={searchResults}
         onSearchChange={setSearchQuery}
         onSearchSelect={handleSearchSelect}
+        onWarningSelect={handleWarningSelect}
         activeFileTypes={activeFileTypes}
         activeCommunities={activeCommunities}
         pathPrefix={pathPrefix}
