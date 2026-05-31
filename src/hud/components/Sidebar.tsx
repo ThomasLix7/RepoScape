@@ -41,7 +41,7 @@ const FILE_TYPE_ICONS: Record<string, string> = {
 
 const communityColors = [
   '#ff79c6', '#50fa7b', '#f1fa8c', '#bd93f9',
-  '#ff5555', '#8be9fd', '#ffb86c', '#6272a4',
+  '#94a3ff', '#8be9fd', '#5af0b8', '#6272a4',
 ];
 
 function getCommunityColor(id: number): string {
@@ -923,7 +923,9 @@ export function Sidebar({
         {selectedEdge && (
           <div>
             <div style={{
-              color: edgeColor(selectedEdge.type),
+              color: selectedEdge.type === 'SUSPICIOUS'
+                ? (selectedEdge.score >= 0.8 ? '#ff5555' : '#ffb86c')
+                : edgeColor(selectedEdge.type),
               fontSize: 12,
               fontWeight: 600,
               marginBottom: 6,
@@ -941,9 +943,11 @@ export function Sidebar({
               Score: {selectedEdge.score.toFixed(2)}
             </div>
 
-            {selectedEdge.type === 'COGNITIVE' && selectedEdge.metadata?.rationale && (
+            {selectedEdge.metadata?.rationale && (
               <div style={{ marginBottom: 8 }}>
-                <div style={{ color: '#8b949e', fontSize: 10, marginBottom: 4 }}>RATIONALE</div>
+                <div style={{ color: '#8b949e', fontSize: 10, marginBottom: 4 }}>
+                  {selectedEdge.type === 'SUSPICIOUS' ? 'VIOLATION' : 'RATIONALE'}
+                </div>
                 <div style={{
                   color: '#c9d1d9',
                   fontSize: 11,

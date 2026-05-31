@@ -738,9 +738,11 @@ export class CanvasRenderer {
           ctx.lineWidth = isCore ? 2.2 : 1;
           ctx.setLineDash([4, 4]);
         } else {
-          ctx.strokeStyle = `rgba(255, 184, 108, ${0.4 * a})`;
+          // Radar: colour encodes severity (red = must-fix), dash encodes kind.
+          const rgb = edge.score >= 0.8 ? '255, 85, 85' : '255, 184, 108';
+          ctx.strokeStyle = `rgba(${rgb}, ${0.4 * a})`;
           ctx.lineWidth = isCore ? 2.8 : 1.5;
-          ctx.setLineDash([2, 2]);
+          ctx.setLineDash(edge.relation === 'violates_boundary' ? [6, 3] : [2, 2]);
         }
 
         if (isCore) {
@@ -758,7 +760,8 @@ export class CanvasRenderer {
           const SPEED = 0.35; // cycles per second
           const flowColor =
             edge.type === 'PHYSICAL' ? '#00f3ff' :
-            edge.type === 'COGNITIVE' ? '#bd93f9' : '#ffb86c';
+            edge.type === 'COGNITIVE' ? '#bd93f9' :
+            edge.score >= 0.8 ? '#ff5555' : '#ffb86c';
           ctx.fillStyle = flowColor;
           ctx.shadowColor = flowColor;
           ctx.shadowBlur = 6;
@@ -781,7 +784,7 @@ export class CanvasRenderer {
 
     const communityColors = [
       '#ff79c6', '#50fa7b', '#f1fa8c', '#bd93f9',
-      '#ff5555', '#8be9fd', '#ffb86c', '#6272a4',
+      '#94a3ff', '#8be9fd', '#5af0b8', '#6272a4',
     ];
 
     for (const node of nodes) {

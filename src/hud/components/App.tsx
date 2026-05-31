@@ -119,7 +119,7 @@ export function App() {
   // Must mirror the server's getEdgeMapKey (compiler.ts) so removedEdges keys match.
   const edgeKey = (e: GraphEdge) => {
     if (e.type === 'COGNITIVE') return `cog_${e.source}->${e.target}_${e.relation}`;
-    if (e.type === 'SUSPICIOUS') return `sus_${e.source}->${e.target}`;
+    if (e.type === 'SUSPICIOUS') return `sus_${e.source}->${e.target}_${e.relation}`;
     return `${e.source}->${e.target}_${e.relation}`;
   };
 
