@@ -1,6 +1,6 @@
 ---
 name: reposcape
-description: "Use when extracting RepoScape cognitive graph insights, answering architecture questions with the RepoScape graph, or sending low-frequency RepoScape milestone updates."
+description: "RepoScape graph/HUD and cognitive insights. Supports: update = refresh changed docs; update force = rescan selected docs."
 ---
 
 # RepoScape Agent Skill
@@ -8,6 +8,21 @@ description: "Use when extracting RepoScape cognitive graph insights, answering 
 RepoScape is a local codebase graph daemon and visual HUD. The daemon owns deterministic workspace telemetry such as file watching, graph recompilation, WebSocket graph diffs, and session security. The agent should use this skill only for work that needs language-model judgment: cognitive graph extraction, topology-aware architecture analysis, narrated tours that speak and highlight the answer in the HUD (the default for architecture questions when the daemon is live), and occasional high-level milestone updates.
 
 Do not manually send high-frequency focus or activity events for every file read, cursor movement, or edit. Those signals belong in IDE extensions, harness/tool wrappers, or the RepoScape daemon itself.
+
+## Command Modes
+
+Treat `/reposcape` as the single RepoScape command surface. Do not create or rely on a
+separate `/reposcape-update` command; `update` is a parameter mode of this skill.
+
+- `/reposcape` — answer architecture questions, extract cognitive graph insights for an
+  explicitly scoped doc set, or drive HUD analysis.
+- `/reposcape update` — incrementally refresh cognitive insights only for modified or
+  untracked documentation files discovered by `git status --porcelain`.
+- `/reposcape update <path...>` — incrementally refresh only changed documentation files under
+  the supplied file or directory paths.
+- `/reposcape update force <path...>` — re-extract the supplied documentation files or
+  directories even if Git does not report them as changed. If no path is supplied, or the path
+  spans a broad doc set, name the intended scope and ask before sweeping.
 
 ## Execution Guard
 
@@ -22,7 +37,7 @@ Before making any optional RepoScape HTTP call, run this three-state diagnosis. 
 When the daemon is offline:
 
 - **Passive questions (e.g., general architecture explanations)**: gracefully skip RepoScape synchronization, note it briefly at the end of your response, and continue with normal offline work using standard file-reading and grep tools.
-- **Active `/reposcape` sweeps or explicit HUD analysis**: do NOT abort. Bootstrap the daemon following **Daemon Bootstrap** below, then resume.
+- **Active `/reposcape` sweeps, `/reposcape update`, or explicit HUD analysis**: do NOT abort. Bootstrap the daemon following **Daemon Bootstrap** below, then resume.
 
 Never let RepoScape telemetry calls block the requested coding task.
 
@@ -70,6 +85,30 @@ Payload:
 ```
 
 Use this for low-frequency events such as starting a large refactor, beginning verification, or finishing a graph investigation. Do not send it before every command.
+
+## Incremental Insight Update
+
+Use this workflow for `/reposcape update`. It refreshes the agent-produced cognitive layer
+without sweeping unchanged documentation.
+
+1. Run the Execution Guard. This is an active RepoScape operation, so bootstrap the daemon if it
+   is offline.
+2. Determine target files:
+   - Default mode: run `git status --porcelain` and select only modified or untracked
+     documentation files, such as Markdown files under `docs/` or other design/runbook
+     locations.
+   - Path mode: limit that same changed-file selection to the requested path arguments.
+   - Force mode: select documentation files from the requested path arguments even when Git does
+     not report them as changed. If force mode has no path, or would cover a large directory,
+     ask before proceeding.
+   - Skip deleted files; there is no document content to extract. Let the daemon's file watcher
+     and reconciliation behavior remove stale graph data for missing source files.
+3. If no target files remain, report that no documentation files need insight updates and stop.
+4. For the target files only, follow **Cognitive Graph Extraction** below. Do not sweep
+   unmodified files.
+5. Batch ingest the collected per-file extractions with `POST /api/insights/batch`. A re-POST
+   for the same `file` overwrites only that file's `.reposcape/insights/<hash>.json`, so the
+   update is idempotent and localized.
 
 ## Cognitive Graph Extraction
 
