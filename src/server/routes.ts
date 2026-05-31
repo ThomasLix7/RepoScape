@@ -5,6 +5,7 @@ import { authMiddleware } from './security.js';
 import { validateCognitiveChunk, validateTour } from './security.js';
 import { writeCacheAtomic, ensureDir, hashSourceFile } from './cache.js';
 import { GraphCompiler } from './compiler.js';
+import { compileRulePattern } from './boundaries.js';
 import { appendErrorLog } from './logger.js';
 import { FocusEvent, BatchInsightsRequest, GraphDiff, Tour, GraphNode, GraphEdge } from './types.js';
 
@@ -32,6 +33,30 @@ function buildAdjacency(edges: GraphEdge[]): Map<string, Set<string>> {
 
 function normalizeRelPath(p: string): string {
   return p.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+// Blast radius: file nodes that transitively import `startNodeId`, via reverse BFS over
+// PHYSICAL `imports` edges (source imports target). The persuasive "why a rule matters" count.
+function importDependents(edges: GraphEdge[], startNodeId: string): Set<string> {
+  const rev = new Map<string, string[]>();
+  for (const e of edges) {
+    if (e.type === 'PHYSICAL' && e.relation === 'imports') {
+      if (!rev.has(e.target)) rev.set(e.target, []);
+      rev.get(e.target)!.push(e.source);
+    }
+  }
+  const seen = new Set<string>();
+  const queue = [startNodeId];
+  while (queue.length) {
+    const cur = queue.shift()!;
+    for (const src of rev.get(cur) ?? []) {
+      if (!seen.has(src)) {
+        seen.add(src);
+        queue.push(src);
+      }
+    }
+  }
+  return seen;
 }
 
 const compactNode = (n: GraphNode): string =>
@@ -92,6 +117,58 @@ export function createRoutes(
           target: describe(e.target),
         }));
       res.json({ violations });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // §Radar: scoped boundary briefing for one file — the rules that touch it, the current
+  // violations on it, and its blast radius. The in-loop steering signal for an agent
+  // about to edit the file (locality a flat rules file can't give).
+  router.get('/api/boundaries', (req: Request, res: Response) => {
+    try {
+      const file = normalizeRelPath(String(req.query.file ?? ''));
+      if (!file) {
+        res.status(400).json({ error: 'Missing required query param: file' });
+        return;
+      }
+
+      const applicable = compiler.getArchitectureRules().boundaries.filter((r) => {
+        const kind = r.pathKind ?? 'glob';
+        try {
+          return compileRulePattern(r.from, kind).test(file) || compileRulePattern(r.to, kind).test(file);
+        } catch {
+          return false;
+        }
+      });
+
+      const nodes = compiler.getNodes();
+      const nodeById = new Map(nodes.map((n) => [n.id, n]));
+      const describe = (id: string) => {
+        const n = nodeById.get(id);
+        return { id, label: n?.label, file: n?.source_file };
+      };
+      const touchesFile = (id: string) => {
+        const sf = nodeById.get(id)?.source_file;
+        return !!sf && normalizeRelPath(sf) === file;
+      };
+
+      const violations = compiler
+        .getEdges()
+        .filter((e) => e.type === 'SUSPICIOUS' && e.relation === 'violates_boundary')
+        .filter((e) => touchesFile(e.source) || touchesFile(e.target))
+        .map((e) => ({
+          severity: e.score >= 0.8 ? 'error' : 'warn',
+          score: e.score,
+          reason: e.metadata?.rationale ?? '',
+          source: describe(e.source),
+          target: describe(e.target),
+        }));
+
+      const fileNode = nodes.find((n) => normalizeRelPath(n.source_file) === file && !n.source_location);
+      const dependents = fileNode ? importDependents(compiler.getEdges(), fileNode.id).size : 0;
+
+      res.json({ file, rules: applicable, violations, blastRadius: { dependents } });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

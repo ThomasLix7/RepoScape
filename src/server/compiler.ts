@@ -1214,6 +1214,10 @@ export class GraphCompiler {
     return this.hubNodes;
   }
 
+  getArchitectureRules(): ArchitectureRules {
+    return this.architectureRules;
+  }
+
   getCommunities(): Map<string, number> {
     return this.communities;
   }
