@@ -71,6 +71,32 @@ export function createRoutes(
     }
   });
 
+  // Architectural Safety Radar: SUSPICIOUS edges are kept out of the visual graph
+  // (overview/neighborhood) but are queryable here for CLI/CI/agent checks.
+  router.get('/api/violations', (_req: Request, res: Response) => {
+    try {
+      const nodeById = new Map(compiler.getNodes().map((n) => [n.id, n]));
+      const describe = (id: string) => {
+        const n = nodeById.get(id);
+        return { id, label: n?.label, file: n?.source_file };
+      };
+      const violations = compiler
+        .getEdges()
+        .filter((e) => e.type === 'SUSPICIOUS')
+        .map((e) => ({
+          relation: e.relation,
+          severity: e.score >= 0.8 ? 'error' : 'warn',
+          score: e.score,
+          reason: e.metadata?.rationale ?? '',
+          source: describe(e.source),
+          target: describe(e.target),
+        }));
+      res.json({ violations });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   router.post('/api/focus', async (req: Request, res: Response) => {
     try {
       const event: FocusEvent = req.body;
