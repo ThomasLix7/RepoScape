@@ -65,6 +65,8 @@ matching rule wins per import.
   normal nodes and edges never use them.
 - **Dash pattern encodes kind:** boundary violations and circular dependencies
   use distinct dashes.
+- When a radar edge is visible on the same node pair as a physical edge, the
+  physical edge is suppressed so the warning stays readable.
 - **Click an edge** to see the violation reason in the sidebar.
 - Toggle the `SUSPICIOUS` layer on/off from the sidebar legend.
 
