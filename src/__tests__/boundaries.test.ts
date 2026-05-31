@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   globToRegExp,
+  compileRulePattern,
   detectBoundaryViolations,
   parseArchitectureRules,
 } from '../server/boundaries.js';
@@ -88,5 +89,73 @@ describe('detectBoundaryViolations', () => {
     );
     expect(v).toHaveLength(1);
     expect(v[0].score).toBe(0.5); // first rule (warn) wins
+  });
+
+  it('except suppresses an otherwise-matching edge (to-side)', () => {
+    const withExcept = parseArchitectureRules({
+      boundaries: [
+        { from: 'src/ui/**', to: 'src/db/**', except: ['src/db/types/**'], severity: 'error' },
+      ],
+    });
+    const blocked = detectBoundaryViolations(
+      [{ source: 'n1', target: 'n2', fromFile: 'src/ui/App.tsx', toFile: 'src/db/client.ts' }],
+      withExcept
+    );
+    expect(blocked).toHaveLength(1);
+    const excepted = detectBoundaryViolations(
+      [{ source: 'n1', target: 'n2', fromFile: 'src/ui/App.tsx', toFile: 'src/db/types/row.ts' }],
+      withExcept
+    );
+    expect(excepted).toEqual([]);
+  });
+});
+
+describe('compileRulePattern', () => {
+  it('regex kind is used verbatim and unanchored', () => {
+    const re = compileRulePattern('^src/db', 'regex');
+    expect(re.test('src/db/client.ts')).toBe(true); // unanchored: prefix match
+    expect(re.test('packages/src/db.ts')).toBe(false); // ^ still applies
+  });
+
+  it('glob kind stays anchored', () => {
+    expect(compileRulePattern('src/db/**', 'glob').test('src/db/client.ts')).toBe(true);
+    expect(compileRulePattern('src/db/**', 'glob').test('x/src/db/client.ts')).toBe(false);
+  });
+});
+
+describe('parseArchitectureRules — pathKind / except validation', () => {
+  it('keeps a regex rule and matches it unanchored', () => {
+    const parsed = parseArchitectureRules({
+      boundaries: [{ from: '^src/ui', to: '^src/db', pathKind: 'regex', severity: 'error' }],
+    });
+    expect(parsed.boundaries).toHaveLength(1);
+    const v = detectBoundaryViolations(
+      [{ source: 'n1', target: 'n2', fromFile: 'src/ui/App.tsx', toFile: 'src/db/client.ts' }],
+      parsed
+    );
+    expect(v).toHaveLength(1);
+  });
+
+  it('drops a rule whose regex fails to compile but keeps siblings', () => {
+    const parsed = parseArchitectureRules({
+      boundaries: [
+        { from: '(', to: '^src/db', pathKind: 'regex' }, // unbalanced paren → invalid
+        { from: '^src/ui', to: '^src/db', pathKind: 'regex' },
+      ],
+    });
+    expect(parsed.boundaries).toHaveLength(1);
+    expect(parsed.boundaries[0].from).toBe('^src/ui');
+  });
+
+  it('drops rules with a bad pathKind or malformed except', () => {
+    const parsed = parseArchitectureRules({
+      boundaries: [
+        { from: 'a/**', to: 'b/**', pathKind: 'bogus' },
+        { from: 'a/**', to: 'b/**', except: [1, 2] },
+        { from: 'a/**', to: 'b/**', except: 'c/**' }, // string coerced to [string]
+      ],
+    });
+    expect(parsed.boundaries).toHaveLength(1);
+    expect(parsed.boundaries[0].except).toEqual(['c/**']);
   });
 });
