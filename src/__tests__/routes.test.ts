@@ -505,3 +505,158 @@ describe('Routes', () => {
     });
   });
 });
+
+describe('Graph context endpoints', () => {
+  let server: Server;
+  let baseUrl: string;
+  let token: string;
+  let projectRoot: string;
+  let cleanup: () => void;
+
+  const nodes: GraphNode[] = [
+    { id: 'src_a_ts', label: 'a.ts', file_type: 'code', source_file: 'src/a.ts' },
+    { id: 'src_a_ts:foo', label: 'foo', file_type: 'code', source_file: 'src/a.ts', source_location: 'L1' },
+    { id: 'src_a_ts:bar.baz', label: 'baz', file_type: 'code', source_file: 'src/a.ts', source_location: 'L5' },
+    { id: 'src_a_ts:other.baz', label: 'baz', file_type: 'code', source_file: 'src/a.ts', source_location: 'L9' },
+    { id: 'src_b_ts', label: 'b.ts', file_type: 'code', source_file: 'src/b.ts' },
+    { id: 'src_b_ts:qux', label: 'qux', file_type: 'code', source_file: 'src/b.ts', source_location: 'L2' },
+  ];
+  const edges: GraphEdge[] = [
+    { source: 'src_a_ts', target: 'src_a_ts:foo', relation: 'contains', type: 'PHYSICAL', score: 1 },
+    { source: 'src_a_ts', target: 'src_a_ts:bar.baz', relation: 'contains', type: 'PHYSICAL', score: 1 },
+    { source: 'src_a_ts', target: 'src_a_ts:other.baz', relation: 'contains', type: 'PHYSICAL', score: 1 },
+    { source: 'src_a_ts:foo', target: 'src_b_ts:qux', relation: 'calls', type: 'PHYSICAL', score: 1 },
+    { source: 'src_b_ts', target: 'src_b_ts:qux', relation: 'contains', type: 'PHYSICAL', score: 1 },
+    { source: 'src_a_ts', target: 'src_b_ts', relation: 'circular_dependency', type: 'SUSPICIOUS', score: 0.5 },
+  ];
+  const communities = new Map<string, number>([
+    ['src_a_ts', 0], ['src_a_ts:foo', 0], ['src_a_ts:bar.baz', 0], ['src_a_ts:other.baz', 0],
+    ['src_b_ts', 1], ['src_b_ts:qux', 1],
+  ]);
+
+  beforeAll(async () => {
+    projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'reposcape-ctx-'));
+    token = await generateSessionToken(projectRoot);
+    const compiler = {
+      getNodes: () => nodes,
+      getEdges: () => edges,
+      getHubNodes: () => new Set<string>(['src_a_ts', 'src_b_ts']),
+      getCommunities: () => communities,
+    } as unknown as GraphCompiler;
+
+    const app = express();
+    app.use(express.json());
+    const handle = createRoutes(projectRoot, compiler);
+    cleanup = handle.cleanup;
+    app.use(handle.router);
+    server = createServer(app);
+    await new Promise<void>((resolve) => {
+      server.listen(0, () => {
+        const addr = server.address();
+        const port = typeof addr === 'object' && addr ? addr.port : 0;
+        baseUrl = `http://127.0.0.1:${port}`;
+        resolve();
+      });
+    });
+  });
+
+  afterAll(async () => {
+    cleanup();
+    server.close();
+    await fs.rm(projectRoot, { recursive: true, force: true });
+  });
+
+  const auth = () => ({ Authorization: `Bearer ${token}` });
+
+  describe('GET /api/graph/overview', () => {
+    it('returns a compact community map by default', async () => {
+      const res = await fetch(`${baseUrl}/api/graph/overview`, { headers: auth() });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toContain('text/plain');
+      const text = await res.text();
+      expect(text).toContain('GRAPH 6 nodes, 6 edges, 2 communities');
+      expect(text).toContain('COMMUNITY 0');
+      expect(text).toContain('hub=');
+    });
+
+    it('returns structured data with format=json', async () => {
+      const res = await fetch(`${baseUrl}/api/graph/overview?format=json`, { headers: auth() });
+      const body = await res.json();
+      expect(body.communities).toHaveLength(2);
+      expect(body.communities[0].size).toBeGreaterThanOrEqual(body.communities[1].size);
+    });
+  });
+
+  describe('GET /api/graph/neighborhood', () => {
+    it('returns the compact local subgraph around a node', async () => {
+      const res = await fetch(`${baseUrl}/api/graph/neighborhood?node=src_a_ts:foo&depth=1`, { headers: auth() });
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      expect(text).toContain('NEIGHBORHOOD root=src_a_ts:foo depth=1');
+      expect(text).toContain('NODE src_a_ts:foo');
+      expect(text).toContain('NODE src_b_ts:qux'); // 1-hop neighbor via calls edge
+      expect(text).not.toContain('circular_dependency'); // SUSPICIOUS edges excluded
+    });
+
+    it('returns JSON with format=json', async () => {
+      const res = await fetch(`${baseUrl}/api/graph/neighborhood?node=src_a_ts&depth=2&format=json`, { headers: auth() });
+      const body = await res.json();
+      expect(body.root).toBe('src_a_ts');
+      expect(body.nodes.map((n: GraphNode) => n.id)).toContain('src_a_ts');
+      expect(body.edges.every((e: GraphEdge) => e.type !== 'SUSPICIOUS')).toBe(true);
+    });
+
+    it('truncates to the token budget but always keeps the root first', async () => {
+      // budget is clamped to a floor of 100 tokens (~400 chars), which fits only
+      // part of this 6-node graph, so we expect a partial result led by the root.
+      const res = await fetch(`${baseUrl}/api/graph/neighborhood?node=src_a_ts&depth=2&format=json&budget=1`, { headers: auth() });
+      const body = await res.json();
+      expect(body.truncated).toBe(true);
+      expect(body.nodes.length).toBeGreaterThanOrEqual(1);
+      expect(body.nodes.length).toBeLessThan(6);
+      expect(body.nodes[0].id).toBe('src_a_ts');
+    });
+
+    it('404s for an unknown node with a resolve hint', async () => {
+      const res = await fetch(`${baseUrl}/api/graph/neighborhood?node=does_not_exist`, { headers: auth() });
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.hint).toContain('/api/graph/resolve');
+    });
+
+    it('400s when node param is missing', async () => {
+      const res = await fetch(`${baseUrl}/api/graph/neighborhood`, { headers: auth() });
+      expect(res.status).toBe(400);
+    });
+  });
+
+  describe('GET /api/graph/resolve', () => {
+    it('resolves a symbol to all matching node ids (overload-safe)', async () => {
+      const res = await fetch(`${baseUrl}/api/graph/resolve?file=src/a.ts&symbol=baz`, { headers: auth() });
+      const body = await res.json();
+      expect(body.candidates.map((c: any) => c.id).sort()).toEqual(['src_a_ts:bar.baz', 'src_a_ts:other.baz']);
+    });
+
+    it('resolves a qualified symbol by its last segment', async () => {
+      const res = await fetch(`${baseUrl}/api/graph/resolve?file=src/b.ts&symbol=BarClass.qux`, { headers: auth() });
+      const body = await res.json();
+      expect(body.candidates.map((c: any) => c.id)).toEqual(['src_b_ts:qux']);
+    });
+
+    it('returns the file node id when no symbol is given', async () => {
+      const res = await fetch(`${baseUrl}/api/graph/resolve?file=./src/a.ts`, { headers: auth() });
+      const body = await res.json();
+      expect(body.id).toBe('src_a_ts');
+    });
+
+    it('400s when file param is missing', async () => {
+      const res = await fetch(`${baseUrl}/api/graph/resolve?symbol=foo`, { headers: auth() });
+      expect(res.status).toBe(400);
+    });
+
+    it('404s for an unknown file', async () => {
+      const res = await fetch(`${baseUrl}/api/graph/resolve?file=src/nope.ts`, { headers: auth() });
+      expect(res.status).toBe(404);
+    });
+  });
+});

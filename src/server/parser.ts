@@ -1,7 +1,6 @@
 import Parser from 'web-tree-sitter';
 import fs from 'fs/promises';
 import path from 'path';
-import crypto from 'crypto';
 import { createRequire } from 'node:module';
 import { ExtractionResult, LanguageStrategy, GraphNode, GraphEdge, RawExportEntry, RawImportEntry } from './types.js';
 
@@ -55,9 +54,59 @@ export class ParserRegistry {
   }
 }
 
-function makeNodeId(filePath: string, name: string): string {
-  const stem = crypto.createHash('sha256').update(filePath).digest('hex').slice(0, 8);
-  return `${stem}_${name}`.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+// Deterministic, agent-reproducible node IDs
+function normSeg(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+function makeFileId(relPath: string): string {
+  return relPath
+    .split('/')
+    .map((seg) => seg.toLowerCase().replace(/[^a-z0-9.]+/g, '_').replace(/^[._]+|[._]+$/g, ''))
+    .filter(Boolean)
+    .join('_');
+}
+
+const ID_CONTAINER_TYPES = new Set([
+  'class_declaration',
+  'class_definition',
+  'class',
+  'interface_declaration',
+  'internal_module',
+  'module',
+  'namespace_declaration',
+]);
+
+// Collect enclosing class/namespace chain
+function enclosingQualifier(node: Parser.SyntaxNode): string[] {
+  const parts: string[] = [];
+  let cur = node.parent;
+  while (cur) {
+    if (ID_CONTAINER_TYPES.has(cur.type)) {
+      const nameNode = cur.namedChildren.find(
+        (c) => c.type === 'identifier' || c.type === 'type_identifier'
+      );
+      if (nameNode) parts.unshift(nameNode.text);
+    }
+    cur = cur.parent;
+  }
+  return parts;
+}
+
+function makeNodeId(relPath: string, qualifiedName: string): string {
+  const sym = qualifiedName.split('.').map(normSeg).filter(Boolean).join('.');
+  return sym ? `${makeFileId(relPath)}:${sym}` : makeFileId(relPath);
+}
+
+// Generate qualified symbol IDs with duplicate suffixes
+function makeSymbolIder(relPath: string): (node: Parser.SyntaxNode, name: string) => string {
+  const seen = new Map<string, number>();
+  return (node, name) => {
+    const base = makeNodeId(relPath, [...enclosingQualifier(node), name].join('.'));
+    const count = (seen.get(base) ?? 0) + 1;
+    seen.set(base, count);
+    return count === 1 ? base : `${base}~${count}`;
+  };
 }
 
 export class TypeScriptStrategy implements LanguageStrategy {
@@ -80,7 +129,8 @@ export class TypeScriptStrategy implements LanguageStrategy {
     if (!tree) return { nodes, edges, rawCalls, rawExports, rawImports, diagnostics };
 
     const rootNode = tree.rootNode;
-    const fileNodeId = makeNodeId(filePath, path.basename(filePath, path.extname(filePath)));
+    const fileNodeId = makeFileId(filePath);
+    const symId = makeSymbolIder(filePath);
 
     nodes.push({
       id: fileNodeId,
@@ -233,11 +283,17 @@ export class TypeScriptStrategy implements LanguageStrategy {
         node.type === 'method_definition' ||
         node.type === 'class_declaration'
       ) {
+        // Support property_identifier for class methods
         const nameNode = node.namedChildren.find(
-          (c) => c.type === 'identifier' || c.type === 'type_identifier'
+          (c) =>
+            c.type === 'identifier' ||
+            c.type === 'type_identifier' ||
+            c.type === 'property_identifier'
         );
-        if (nameNode) {
-          const funcId = makeNodeId(filePath, nameNode.text);
+        // Exclude constructors
+        const isConstructor = node.type === 'method_definition' && nameNode?.text === 'constructor';
+        if (nameNode && !isConstructor) {
+          const funcId = symId(node, nameNode.text);
           nodes.push({
             id: funcId,
             label: nameNode.text,
@@ -277,7 +333,7 @@ export class TypeScriptStrategy implements LanguageStrategy {
               c.type === 'class'
           );
 
-          const funcId = makeNodeId(filePath, nameNode.text);
+          const funcId = symId(declarator, nameNode.text);
           const sourceLocation = `L${declarator.startPosition.row + 1}`;
 
           if (init) {
@@ -426,7 +482,8 @@ export class PythonStrategy implements LanguageStrategy {
     if (!tree) return { nodes, edges, rawCalls, rawExports, rawImports };
 
     const rootNode = tree.rootNode;
-    const fileNodeId = makeNodeId(filePath, path.basename(filePath, path.extname(filePath)));
+    const fileNodeId = makeFileId(filePath);
+    const symId = makeSymbolIder(filePath);
 
     nodes.push({
       id: fileNodeId,
@@ -499,7 +556,7 @@ export class PythonStrategy implements LanguageStrategy {
       if (node.type === 'function_definition' || node.type === 'class_definition') {
         const nameNode = node.namedChildren.find((c) => c.type === 'identifier');
         if (nameNode) {
-          const funcId = makeNodeId(filePath, nameNode.text);
+          const funcId = symId(node, nameNode.text);
           nodes.push({
             id: funcId,
             label: nameNode.text,
@@ -558,7 +615,8 @@ export class GenericStrategy implements LanguageStrategy {
     if (!tree) return { nodes, edges, rawCalls, rawExports, rawImports };
 
     const rootNode = tree.rootNode;
-    const fileNodeId = makeNodeId(filePath, path.basename(filePath, path.extname(filePath)));
+    const fileNodeId = makeFileId(filePath);
+    const symId = makeSymbolIder(filePath);
 
     nodes.push({
       id: fileNodeId,
@@ -580,7 +638,7 @@ export class GenericStrategy implements LanguageStrategy {
             c.type === 'type_identifier'
         );
         if (nameChild) {
-          const id = makeNodeId(filePath, nameChild.text);
+          const id = symId(node, nameChild.text);
           nodes.push({
             id,
             label: nameChild.text,

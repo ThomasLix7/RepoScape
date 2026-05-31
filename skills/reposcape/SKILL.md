@@ -270,13 +270,48 @@ A `200 { ok: true }` means the tour was broadcast; the HUD shows a one-click
 `▶ Play Tour (N)` button — N is the beat count — (browsers require a user gesture before
 speaking) and then plays the beats in order, toggling to `⏹ Stop Tour` while it runs.
 
+## Node IDs & Context-Efficient Queries
+
+Node ids are **deterministic** — you can compute them from a file path without fetching the
+graph. Prefer this over loading the whole graph just to copy an id.
+
+**ID rule:**
+- File node = the repo-relative path with `/` → `_`, dots kept, lowercased.
+  `src/server/compiler.ts` → `src_server_compiler.ts` (dots stay so `app/config.ts` and
+  `app.config.ts` don't collide).
+- Symbol node = `<file id>:<qualified name>`, where the qualified name is the enclosing
+  class/namespace chain plus the symbol, joined by `.`, lowercased, non-alphanumeric → `_`.
+  - top-level `compile` in `src/server/compiler.ts` → `src_server_compiler.ts:compile`
+  - method `GraphCompiler.compile` → `src_server_compiler.ts:graphcompiler.compile`
+- Collisions (true overloads / same name + same scope) get a deterministic `~2`, `~3` suffix
+  by appearance order. When unsure, **resolve** instead of guessing.
+
+**Query the graph in slices, not whole.** `GET /api/graph` is the last resort. Default to:
+
+- `GET /api/graph/overview` — whole-repo map: one line per community with its hub node and top
+  members. A few hundred tokens. Use to orient before drilling in. `?format=json` for structured.
+- `GET /api/graph/neighborhood?node=<id>&depth=2&format=compact&budget=1500` — the local subgraph
+  around a node (BFS to `depth`, ranked by closeness, trimmed to a `budget` of ~N tokens).
+  Compact text by default (`NODE …` / `EDGE …` lines); `format=json` for objects. This is
+  typically ~10% of the full-graph token cost. Query the **file** id for a file-level slice.
+- `GET /api/graph/resolve?file=<relative path>&symbol=<name>` — the safety net for the id rule.
+  Returns the real node id(s) for a file + symbol (symbol matched by its last segment, so
+  `GraphCompiler.compile` and `compile` both work). Returns the file node id when `symbol` is
+  omitted. Use whenever your computed id 404s or a symbol might be overloaded.
+
+When emitting insight or tour edges, compute or `resolve` the target id this way instead of
+loading `GET /api/graph` to copy it.
+
 ## Integration Hooks
 
 The following endpoints exist for IDE or harness integrations. They are not mandatory agent duties.
 
 - `POST /api/focus`: file focus, cursor focus, or impacted node hints.
 - `POST /api/agent-activity`: low-frequency agent phase or milestone status.
-- `GET /api/graph`: current compiled graph.
+- `GET /api/graph`: current compiled graph (whole graph — prefer the sliced queries above).
+- `GET /api/graph/overview`: community-level map of the whole graph.
+- `GET /api/graph/neighborhood`: token-budgeted local subgraph around a node.
+- `GET /api/graph/resolve`: file + symbol → deterministic node id(s).
 - `POST /api/insights/batch`: cognitive insight cache ingestion.
 
 Transparent automation should prefer tool wrappers and IDE plugins over LLM-authored shell commands.
