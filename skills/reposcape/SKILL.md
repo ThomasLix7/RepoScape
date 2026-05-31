@@ -56,6 +56,73 @@ Bring the daemon up, then resume. Every step is non-interactive on purpose — a
 3. **Poll, don't sleep.** After launching, poll `GET /api/health` (re-reading the token file each time — it is rewritten on startup) about once a second, up to ~60s. Resume the moment it returns `200 OK`: that response means the initial graph is already compiled and queryable. Also watch the launched process — if it exits early (port in use, missing build, etc.), stop immediately and surface its output instead of waiting out the timeout.
 4. **Give up cleanly** only if the user rejects the launch, the command can't be found or installed, the process exits with an error, or the poll times out. Report the daemon's output in that case.
 
+## Architecture Rules Bootstrap (Toolchain Convergence)
+
+The Safety Radar only lights up if `.reposcape/architecture_rules.json` exists, and almost no
+repo has one hand-authored. Rather than ask the user to write rules, **import the boundary
+intent they already have**. Run this once at the start of an active `/reposcape`, after the
+Execution Guard passes. Check for the rules file first, then branch:
+
+- **`.reposcape/architecture_rules.json` exists** → the radar is already configured. Note it
+  in one line and do nothing here.
+- **Absent** → probe convergence sources, in order, and stop at the first that applies:
+
+  **a. A dependency-cruiser config is present** (`.dependency-cruiser.json` / `.cjs` / `.js`,
+  or a `.dependency-cruiserrc*`). This is a near-1:1 source — eject it. With the user's
+  approval, run the converter that ships beside this skill:
+
+  ```
+  node <this skill dir>/convert-deps.mjs <projectRoot>
+  ```
+
+  Add `--dry-run` first to preview, `--force` only to overwrite an existing file. Relay the
+  converter's **imported/skipped report verbatim** — the skipped lines (back-references,
+  `dependencyTypes`/`circular` checks, `allowed`/`required` rulesets, dropped `from.pathNot`)
+  are the honest lossy boundary, never hide them. After it writes the file, the daemon's
+  watcher recompiles automatically; then `GET /api/violations` and show the **current violation
+  snapshot** ("you currently have N violations on these edges") — that state, not the rules
+  themselves, is what the raw config could not give them. (ESLint `no-restricted-paths` and Nx
+  tags are not supported yet — say so if you see them and there is no dep-cruiser config.)
+
+  **b. Else architecture docs are present** (`ARCHITECTURE.md`, `docs/architecture*`,
+  `DESIGN.md`, or similar). Offer to **draft** candidate boundary rules from the docs. Draft →
+  let the user review and approve each rule → only then write the file. Never silently generate
+  rules and light up the HUD; a wrong rule is worse than no rule (the agent will obey it and
+  contort code).
+
+  **c. Else (no config, no docs)** → inspect the live graph for layering signals (e.g. direct
+  `ui→db` import edges, see `GET /api/graph/neighborhood` and the blast-radius below) and offer
+  **3–5 candidate rules**. State each with its **consequence and blast radius**, grounded in
+  this repo's own edges — not generic best-practice — plus a one-line pro/con. Template:
+
+  > Detected `ui→db` direct imports (5). Without a rule: ① db schema changes silently reach the
+  > UI with no compile error; ② the 5 edges keep multiplying — **the agent doesn't know it's a
+  > violation and will copy the pattern**; ③ swapping the db impl forces UI changes. Blast
+  > radius: **23 UI files** transitively depend on db. With the rule, these edges go red on the
+  > HUD and the agent is told to route around them.
+  >
+  > Pro: turns architecture intent into an enforceable, visible, CI-gateable artifact.
+  > Con: it needs maintenance, and a wrong rule produces persistent false alarms.
+
+  If the user declines, note **once** (not naggy) that HUD architecture alerts stay unavailable
+  without a rules file, and acknowledge small projects may genuinely not need one.
+
+### Scoped Boundary Briefing
+
+In a repo that already has rules, you do **not** need every rule in context. Before editing a
+file you MAY fetch only the boundaries local to it:
+
+```
+GET http://localhost:5173/api/boundaries?file=<repo-relative-path>
+```
+
+It returns the rules whose `from`/`to` touch that file, the current violations on it, and the
+file's blast radius (`{ dependents: N }`). This is the in-loop steering signal — far cheaper
+and sharper than loading the whole rules file. If satisfying a returned rule would force
+convoluted code (an extra indirection layer, an awkward re-route), **surface that back to the
+user** ("this boundary is making me do X — is the rule right?") rather than silently obeying.
+A bad boundary should be reverse-flagged before it damages the code, not after.
+
 ## Responsibility Boundary
 
 RepoScape automation should be split this way:
@@ -351,6 +418,7 @@ The following endpoints exist for IDE or harness integrations. They are not mand
 - `GET /api/graph/overview`: community-level map of the whole graph.
 - `GET /api/graph/neighborhood`: token-budgeted local subgraph around a node.
 - `GET /api/graph/resolve`: file + symbol → deterministic node id(s).
+- `GET /api/boundaries`: rules, current violations, and blast radius scoped to one file (see Scoped Boundary Briefing).
 - `POST /api/insights/batch`: cognitive insight cache ingestion.
 
 Transparent automation should prefer tool wrappers and IDE plugins over LLM-authored shell commands.
