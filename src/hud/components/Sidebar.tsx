@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { GraphNode, GraphEdge, CommunitySummary, NeighborsContext } from '../connection.js';
+import { GraphNode, GraphEdge, CommunitySummary, NeighborsContext, Neighbor } from '../connection.js';
 import { groupWarningEdges } from '../warningGroups.js';
 import { AccordionSection } from './AccordionSection.js';
 
@@ -23,6 +23,7 @@ interface SidebarProps {
   onSearchChange: (q: string) => void;
   onSearchSelect: (nodeId: string) => void;
   onWarningSelect: (edge: GraphEdge, nodeIds?: string[]) => void;
+  onEdgeInspect: (edge: GraphEdge) => void;
   activeFileTypes: Set<string>;
   activeCommunities: Set<number> | null;
   pathPrefix: string;
@@ -72,6 +73,7 @@ export function Sidebar({
   onSearchChange,
   onSearchSelect,
   onWarningSelect,
+  onEdgeInspect,
   activeFileTypes,
   activeCommunities,
   pathPrefix,
@@ -224,6 +226,53 @@ export function Sidebar({
   };
   const nodeLabel = (id: string) => nodesById.get(id)?.label || id;
   const nodeFile = (id: string) => nodesById.get(id)?.source_file || id;
+
+  const renderNeighborRow = (n: Neighbor, dir: 'in' | 'out') => (
+    <div
+      key={`${n.node.id}_${n.edge.relation}`}
+      onClick={() => onSearchSelect(n.node.id)}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        padding: '4px 6px',
+        borderRadius: 3,
+        cursor: 'pointer',
+        fontSize: 10,
+      }}
+      onMouseEnter={e => (e.currentTarget.style.background = '#21262d')}
+      onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+    >
+      <span style={{
+        width: 6,
+        height: 6,
+        borderRadius: '50%',
+        background: getCommunityColor(n.node.community ?? 0),
+        flexShrink: 0,
+      }} />
+      <span style={{ color: '#c9d1d9', flexShrink: 0 }}>{n.node.label}</span>
+      <span style={{
+        color: edgeColor(n.edge.type),
+        fontSize: 9,
+        opacity: 0.85,
+        marginLeft: 'auto',
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+      }}>
+        {dir === 'in' ? '←' : '→'} {n.edge.relation}
+      </span>
+      <span
+        title="Inspect this relationship"
+        onClick={e => { e.stopPropagation(); onEdgeInspect(n.edge); }}
+        style={{ flexShrink: 0, cursor: 'pointer', opacity: 0.6 }}
+        onMouseEnter={e => (e.currentTarget.style.opacity = '1')}
+        onMouseLeave={e => (e.currentTarget.style.opacity = '0.6')}
+      >
+        🔍
+      </span>
+    </div>
+  );
 
   return (
     <div
@@ -1022,32 +1071,7 @@ export function Sidebar({
                   overflow: 'hidden',
                 }}>
                   <div style={{ minHeight: 0, maxHeight: 120, overflowY: 'auto' }}>
-                    {selectedNodeNeighbors.incoming.map(n => (
-                      <div
-                        key={n.id}
-                        onClick={() => onSearchSelect(n.id)}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 6,
-                          padding: '4px 6px',
-                          borderRadius: 3,
-                          cursor: 'pointer',
-                          fontSize: 10,
-                        }}
-                        onMouseEnter={e => (e.currentTarget.style.background = '#21262d')}
-                        onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-                      >
-                        <span style={{
-                          width: 6,
-                          height: 6,
-                          borderRadius: '50%',
-                          background: getCommunityColor(n.community ?? 0),
-                          flexShrink: 0,
-                        }} />
-                        <span style={{ color: '#c9d1d9' }}>{n.label}</span>
-                      </div>
-                    ))}
+                    {selectedNodeNeighbors.incoming.map(n => renderNeighborRow(n, 'in'))}
                   </div>
                 </div>
               </div>
@@ -1074,32 +1098,7 @@ export function Sidebar({
                   overflow: 'hidden',
                 }}>
                   <div style={{ minHeight: 0, maxHeight: 120, overflowY: 'auto' }}>
-                    {selectedNodeNeighbors.outgoing.map(n => (
-                      <div
-                        key={n.id}
-                        onClick={() => onSearchSelect(n.id)}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 6,
-                          padding: '4px 6px',
-                          borderRadius: 3,
-                          cursor: 'pointer',
-                          fontSize: 10,
-                        }}
-                        onMouseEnter={e => (e.currentTarget.style.background = '#21262d')}
-                        onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-                      >
-                        <span style={{
-                          width: 6,
-                          height: 6,
-                          borderRadius: '50%',
-                          background: getCommunityColor(n.community ?? 0),
-                          flexShrink: 0,
-                        }} />
-                        <span style={{ color: '#c9d1d9' }}>{n.label}</span>
-                      </div>
-                    ))}
+                    {selectedNodeNeighbors.outgoing.map(n => renderNeighborRow(n, 'out'))}
                   </div>
                 </div>
               </div>

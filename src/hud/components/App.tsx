@@ -1,12 +1,12 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
-import { connectHUD, GraphNode, GraphEdge, GraphDiff, HUDConnection, Tour, CommunitySummary, NeighborsContext } from '../connection.js';
+import { connectHUD, GraphNode, GraphEdge, GraphDiff, HUDConnection, Tour, CommunitySummary, NeighborsContext, Neighbor } from '../connection.js';
 import { CanvasRenderer } from './CanvasRenderer.js';
 import { Sidebar } from './Sidebar.js';
 
 const INITIAL_TOKEN = new URLSearchParams(window.location.search).get('token') || '';
 
-// Duration (ms) a node stays highlighted after its last "edited" signal.
-const FOCUS_TTL_MS = 8000;
+const FOCUS_TTL_MS = 5000;
+const CHANGED_TTL_MS = 10000;
 
 // Let the camera fly/frame the beat's nodes before the narration starts speaking,
 // so the voice lands on a view that has already arrived ("指哪说哪").
@@ -36,6 +36,15 @@ const tourBtnPrimaryStyle: React.CSSProperties = {
 
 function getToken(): string {
   return INITIAL_TOKEN;
+}
+
+// Filter out community re-clustering and line shift noise using contentHash.
+function isCodeChange(prev: GraphNode, next: GraphNode): boolean {
+  if (prev.label !== next.label || prev.source_file !== next.source_file) return true;
+  if (prev.contentHash !== undefined || next.contentHash !== undefined) {
+    return prev.contentHash !== next.contentHash;
+  }
+  return false;
 }
 
 function renderRichSubtitle(text: string) {
@@ -127,11 +136,19 @@ export function App() {
   const handleDiff = useCallback((diff: GraphDiff) => {
     setNodes((prev) => {
       const map = new Map(prev.map((n) => [n.id, n]));
+      const changedTtl = Date.now() + CHANGED_TTL_MS;
       for (const id of diff.removedNodes) map.delete(id);
-      for (const node of diff.addedNodes) map.set(node.id, node);
+      for (const node of diff.addedNodes) map.set(node.id, { ...node, changed: true, changedTtl });
       for (const update of diff.updatedNodes) {
         const existing = map.get(update.id!);
-        if (existing) map.set(update.id!, { ...existing, ...update });
+        if (!existing) continue;
+        // Apply all updates; only flag `changed` when actual code changed.
+        const merged = { ...existing, ...update };
+        if (isCodeChange(existing, update as GraphNode)) {
+          merged.changed = true;
+          merged.changedTtl = changedTtl;
+        }
+        map.set(update.id!, merged);
       }
       return Array.from(map.values());
     });
@@ -319,20 +336,24 @@ export function App() {
     return () => conn.close();
   }, [handleDiff, handleFullGraph, handleStatusChange, handleFocus, handleTour]);
 
-  // Periodic sweep to clear expired focus highlights.
   useEffect(() => {
     const interval = setInterval(() => {
       const now = Date.now();
       setNodes((prev) => {
-        let changed = false;
+        let mutated = false;
         const next = prev.map((n) => {
-          if (n.focus && n.focusTtl && now > n.focusTtl) {
-            changed = true;
-            return { ...n, focus: false };
+          let m = n;
+          if (m.focus && m.focusTtl && now > m.focusTtl) {
+            m = { ...m, focus: false };
+            mutated = true;
           }
-          return n;
+          if (m.changed && m.changedTtl && now > m.changedTtl) {
+            m = { ...m, changed: false };
+            mutated = true;
+          }
+          return m;
         });
-        return changed ? next : prev;
+        return mutated ? next : prev;
       });
     }, 1000);
     return () => clearInterval(interval);
@@ -433,16 +454,18 @@ export function App() {
 
   const selectedNodeNeighbors = useMemo<NeighborsContext>(() => {
     if (!selectedNode) return { incoming: [], outgoing: [] };
-    const incomingMap = new Map<string, GraphNode>();
-    const outgoingMap = new Map<string, GraphNode>();
+    const incomingMap = new Map<string, Neighbor>();
+    const outgoingMap = new Map<string, Neighbor>();
     for (const edge of edges) {
       if (edge.target === selectedNode.id) {
         const src = nodeMap.get(edge.source);
-        if (src && !incomingMap.has(src.id)) incomingMap.set(src.id, src);
+        const key = `${edge.source}_${edge.relation}`;
+        if (src && !incomingMap.has(key)) incomingMap.set(key, { node: src, edge });
       }
       if (edge.source === selectedNode.id) {
         const tgt = nodeMap.get(edge.target);
-        if (tgt && !outgoingMap.has(tgt.id)) outgoingMap.set(tgt.id, tgt);
+        const key = `${edge.target}_${edge.relation}`;
+        if (tgt && !outgoingMap.has(key)) outgoingMap.set(key, { node: tgt, edge });
       }
     }
     return { incoming: Array.from(incomingMap.values()), outgoing: Array.from(outgoingMap.values()) };
@@ -470,10 +493,9 @@ export function App() {
     setSearchQuery('');
   };
 
-  const handleWarningSelect = useCallback((edge: GraphEdge, nodeIds: string[] = [edge.source, edge.target]) => {
+  const selectEdgeAndFocus = useCallback((edge: GraphEdge, nodeIds: string[]) => {
     const focusNodeIds = nodeIds.length > 0 ? nodeIds : [edge.source, edge.target];
 
-    setShowSuspicious(true);
     setSelectedEdge(edge);
     setSelectedNode(null);
     rendererRef.current?.setSelectedNode(null);
@@ -491,6 +513,18 @@ export function App() {
     });
     setPendingWarningFocus({ edge, nodeIds: focusNodeIds });
   }, [nodeMap]);
+
+  const handleWarningSelect = useCallback((edge: GraphEdge, nodeIds: string[] = [edge.source, edge.target]) => {
+    setShowSuspicious(true);
+    selectEdgeAndFocus(edge, nodeIds);
+  }, [selectEdgeAndFocus]);
+
+  const handleEdgeInspect = useCallback((edge: GraphEdge) => {
+    if (edge.type === 'PHYSICAL') setShowPhysical(true);
+    else if (edge.type === 'COGNITIVE') setShowCognitive(true);
+    else setShowSuspicious(true);
+    selectEdgeAndFocus(edge, [edge.source, edge.target]);
+  }, [selectEdgeAndFocus]);
 
   useEffect(() => {
     if (!pendingWarningFocus) return;
@@ -659,6 +693,7 @@ export function App() {
         onSearchChange={setSearchQuery}
         onSearchSelect={handleSearchSelect}
         onWarningSelect={handleWarningSelect}
+        onEdgeInspect={handleEdgeInspect}
         activeFileTypes={activeFileTypes}
         activeCommunities={activeCommunities}
         pathPrefix={pathPrefix}

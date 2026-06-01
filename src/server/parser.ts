@@ -98,6 +98,12 @@ function makeNodeId(relPath: string, qualifiedName: string): string {
   return sym ? `${makeFileId(relPath)}:${sym}` : makeFileId(relPath);
 }
 
+function hashText(text: string): string {
+  let h = 5381;
+  for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+
 // Generate qualified symbol IDs with duplicate suffixes
 function makeSymbolIder(relPath: string): (node: Parser.SyntaxNode, name: string) => string {
   const seen = new Map<string, number>();
@@ -300,6 +306,7 @@ export class TypeScriptStrategy implements LanguageStrategy {
             file_type: 'code',
             source_file: filePath,
             source_location: `L${node.startPosition.row + 1}`,
+            contentHash: hashText(node.text),
           });
           edges.push({
             source: fileNodeId,
@@ -343,6 +350,7 @@ export class TypeScriptStrategy implements LanguageStrategy {
               file_type: 'code',
               source_file: filePath,
               source_location: sourceLocation,
+              contentHash: hashText(declarator.text),
             });
             edges.push({
               source: fileNodeId,
@@ -563,6 +571,7 @@ export class PythonStrategy implements LanguageStrategy {
             file_type: 'code',
             source_file: filePath,
             source_location: `L${node.startPosition.row + 1}`,
+            contentHash: hashText(node.text),
           });
           edges.push({
             source: fileNodeId,
@@ -645,6 +654,7 @@ export class GenericStrategy implements LanguageStrategy {
             file_type: 'code',
             source_file: filePath,
             source_location: `L${node.startPosition.row + 1}`,
+            contentHash: hashText(node.text),
           });
           edges.push({
             source: fileNodeId,

@@ -4,6 +4,8 @@ export interface GraphNode {
   file_type: 'code' | 'document' | 'concept';
   source_file: string;
   source_location?: string;
+  // Stable symbol text hash (code symbols only).
+  contentHash?: string;
   metadata?: Record<string, any>;
   x?: number;
   y?: number;

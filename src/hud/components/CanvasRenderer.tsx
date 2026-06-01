@@ -310,14 +310,9 @@ export class CanvasRenderer {
     this.userInteracted = true;
   }
 
-  // Blend a hex color toward white by `amount` (0..1) for a brighter fill.
-  private lighten(hex: string, amount: number): string {
+  private hexToRgbStr(hex: string): string {
     const n = parseInt(hex.slice(1), 16);
-    const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
-    const lr = Math.round(r + (255 - r) * amount);
-    const lg = Math.round(g + (255 - g) * amount);
-    const lb = Math.round(b + (255 - b) * amount);
-    return `rgb(${lr}, ${lg}, ${lb})`;
+    return `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`;
   }
 
   private getLabelImage(text: string): { img: HTMLCanvasElement; w: number; h: number } {
@@ -474,7 +469,7 @@ export class CanvasRenderer {
     const y = (clientY - rect.top - rect.height / 2) / this.camera.zoom + this.camera.y;
 
     let closestEdge: GraphEdge | null = null;
-    let closestDist = 12;
+    let closestDist = 12 / this.camera.zoom;
 
     for (const edge of this.currentEdges) {
       if (edge.type === 'PHYSICAL' && !this.currentOptions.showPhysical) continue;
@@ -485,10 +480,18 @@ export class CanvasRenderer {
       const targetPos = this.nodePositions.get(edge.target);
       if (!sourcePos || !targetPos) continue;
 
-      const midX = (sourcePos.x + targetPos.x) / 2;
-      const midY = (sourcePos.y + targetPos.y) / 2;
-      const dx = x - midX;
-      const dy = y - midY;
+      const segX = targetPos.x - sourcePos.x;
+      const segY = targetPos.y - sourcePos.y;
+      const lenSq = segX * segX + segY * segY;
+      let t = 0;
+      if (lenSq > 0) {
+        t = ((x - sourcePos.x) * segX + (y - sourcePos.y) * segY) / lenSq;
+        t = Math.max(0, Math.min(1, t));
+      }
+      const closestX = sourcePos.x + t * segX;
+      const closestY = sourcePos.y + t * segY;
+      const dx = x - closestX;
+      const dy = y - closestY;
       const dist = Math.sqrt(dx * dx + dy * dy);
 
       if (dist < closestDist) {
@@ -645,6 +648,8 @@ export class CanvasRenderer {
     const focusedIds = new Set<string>();
     for (const n of nodes) if (n.focus) focusedIds.add(n.id);
     const hasChangeFocus = focusedIds.size > 0;
+    let hasChangedNodes = false;
+    for (const n of nodes) if (n.changed) { hasChangedNodes = true; break; }
 
     // On focus changes, fly the camera to frame the changed nodes; restore on clear.
     const focusSig = Array.from(focusedIds).sort().join(',');
@@ -676,7 +681,7 @@ export class CanvasRenderer {
       !!this.d3Simulation && this.d3Simulation.alpha() > this.d3Simulation.alphaMin();
     const idle =
       !dataChanged && !cameraMoving && !simRunning && !hasChangeFocus &&
-      this.highlightedNodes.size === 0 && !this.draggedNode;
+      !hasChangedNodes && this.highlightedNodes.size === 0 && !this.draggedNode;
 
     if (idle) {
       const selEdgeKey = this.selectedEdge ? `${this.selectedEdge.source}->${this.selectedEdge.target}_${this.selectedEdge.relation}` : '';
@@ -867,13 +872,6 @@ export class CanvasRenderer {
         ctx.fillStyle = '#f1fa8c';
         ctx.shadowColor = '#f1fa8c';
         ctx.shadowBlur = 12 + 4 * Math.sin(Date.now() / 300);
-      } else if (node.focus) {
-        // Changed node: brightened community color with steady glow (no ring/blink).
-        const base = communityColors[colorIdx];
-        ctx.fillStyle = this.lighten(base, 0.55);
-        ctx.shadowColor = base;
-        // Breathing glow so the discussed node reads as "alive" during narration.
-        ctx.shadowBlur = 20 + 5 * Math.sin(Date.now() / 300);
       } else {
         ctx.fillStyle = communityColors[colorIdx];
         ctx.shadowColor = communityColors[colorIdx];
@@ -907,6 +905,47 @@ export class CanvasRenderer {
 
       ctx.globalAlpha = 1;
     }
+
+    for (const node of nodes) {
+      if (!node.changed) continue;
+      const pos = this.nodePositions.get(node.id);
+      if (!pos) continue;
+      const size = this.nodeSizes.get(node.id) ?? 6;
+      if (!this.isVisible(pos.x, pos.y, size * 2 + 60, w, h)) continue;
+
+      const drawSize = Math.max(size, 2 / zoom);
+      const base = communityColors[(node.community ?? 0) % communityColors.length];
+      const rgb = this.hexToRgbStr(base);
+
+      ctx.globalAlpha = 1;
+
+      const RIPPLE_PERIOD = 1.8;
+      const RIPPLE_REACH = 34;
+      for (let k = 0; k < 2; k++) {
+        const phase = ((this.flowPhase / RIPPLE_PERIOD) + k * 0.5) % 1;
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, drawSize + 2 + phase * RIPPLE_REACH, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(${rgb}, ${(1 - phase) * 0.45})`;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+
+      ctx.beginPath();
+      ctx.arc(pos.x, pos.y, drawSize, 0, Math.PI * 2);
+      ctx.fillStyle = base;
+      ctx.shadowColor = base;
+      ctx.shadowBlur = 15 + 8 * Math.sin(Date.now() / 150);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      const label = node.label || node.id;
+      const { img, w: lw, h: lh } = this.getLabelImage(label);
+      const targetPx = Math.max(9, 11 / Math.max(0.5, zoom));
+      const s = targetPx / CanvasRenderer.LABEL_FONT_PX;
+      const dw = lw * s, dh = lh * s;
+      ctx.drawImage(img, pos.x - dw / 2, pos.y + drawSize + 12, dw, dh);
+    }
+    ctx.globalAlpha = 1;
 
     ctx.restore();
 

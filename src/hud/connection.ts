@@ -4,6 +4,8 @@ export interface GraphNode {
   file_type: 'code' | 'document' | 'concept';
   source_file: string;
   source_location?: string;
+  // Stable symbol text hash (code symbols only).
+  contentHash?: string;
   metadata?: Record<string, any>;
   x?: number;
   y?: number;
@@ -14,6 +16,8 @@ export interface GraphNode {
   activity?: string;
   focus?: boolean;
   focusTtl?: number;
+  changed?: boolean;
+  changedTtl?: number;
 }
 
 export interface CommunitySummary {
@@ -24,9 +28,14 @@ export interface CommunitySummary {
   hubNodeName: string;
 }
 
+export interface Neighbor {
+  node: GraphNode;
+  edge: GraphEdge;
+}
+
 export interface NeighborsContext {
-  incoming: GraphNode[];
-  outgoing: GraphNode[];
+  incoming: Neighbor[];
+  outgoing: Neighbor[];
 }
 
 export interface GraphEdge {
