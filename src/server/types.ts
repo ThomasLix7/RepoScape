@@ -100,6 +100,9 @@ export interface TourBeat {
 
 export interface Tour {
   beats: TourBeat[];
+  id?: string;
+  timestamp?: number;
+  title?: string;
 }
 
 export interface WSMessage {

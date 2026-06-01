@@ -89,6 +89,7 @@ function isValidEdgeMetadata(metadata: any): boolean {
 export function validateTour(body: any): body is Tour {
   if (!body || typeof body !== 'object') return false;
   if (!Array.isArray(body.beats) || body.beats.length === 0) return false;
+  if (body.title !== undefined && typeof body.title !== 'string') return false;
   for (const beat of body.beats) {
     if (!beat || typeof beat !== 'object') return false;
     if (typeof beat.say !== 'string' || !beat.say.trim()) return false;
