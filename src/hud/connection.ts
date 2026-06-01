@@ -67,6 +67,9 @@ export interface TourBeat {
 
 export interface Tour {
   beats: TourBeat[];
+  id?: string;
+  timestamp?: number;
+  title?: string;
 }
 
 export interface WSMessage {
@@ -79,6 +82,23 @@ export interface WSMessage {
 
 export interface HUDConnection {
   close: () => void;
+}
+
+export async function fetchTours(token: string): Promise<Tour[]> {
+  const res = await fetch('/api/tours', {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`GET /api/tours failed: ${res.status}`);
+  const body = await res.json();
+  return Array.isArray(body.tours) ? body.tours : [];
+}
+
+export async function deleteTourReq(token: string, id: string): Promise<void> {
+  const res = await fetch(`/api/tours/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`DELETE /api/tours/${id} failed: ${res.status}`);
 }
 
 export function connectHUD(
