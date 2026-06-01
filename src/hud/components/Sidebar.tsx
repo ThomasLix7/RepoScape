@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { GraphNode, GraphEdge, CommunitySummary, NeighborsContext, Neighbor } from '../connection.js';
+import { GraphNode, GraphEdge, CommunitySummary, NeighborsContext, Neighbor, Tour } from '../connection.js';
 import { groupWarningEdges } from '../warningGroups.js';
 import { AccordionSection } from './AccordionSection.js';
 
@@ -34,6 +34,14 @@ interface SidebarProps {
   selectedNodeNeighbors: NeighborsContext;
   hubNodes: Set<string>;
   baseFilteredNodes: GraphNode[];
+  tours: Tour[];
+  activeTourId: string | null;
+  tourActive: boolean;
+  onPlayTour: (id: string) => void;
+  onReplayTour: () => void;
+  onStopTour: () => void;
+  onPreviewTour: (id: string) => void;
+  onDeleteTour: (id: string) => void;
 }
 
 const FILE_TYPES = ['code', 'document', 'concept'];
@@ -52,6 +60,22 @@ const communityColors = [
 function getCommunityColor(id: number): string {
   return communityColors[id % communityColors.length];
 }
+
+const tourIconBtn: React.CSSProperties = {
+  flexShrink: 0,
+  width: 24,
+  height: 24,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  borderRadius: 4,
+  border: '1px solid #30363d',
+  background: '#161b22',
+  color: '#c9d1d9',
+  fontSize: 11,
+  cursor: 'pointer',
+  padding: 0,
+};
 
 export function Sidebar({
   status,
@@ -84,6 +108,14 @@ export function Sidebar({
   selectedNodeNeighbors,
   hubNodes,
   baseFilteredNodes,
+  tours,
+  activeTourId,
+  tourActive,
+  onPlayTour,
+  onReplayTour,
+  onStopTour,
+  onPreviewTour,
+  onDeleteTour,
 }: SidebarProps) {
   const [expandedPanels, setExpandedPanels] = useState<Set<number>>(new Set([3, 4]));
   const [expandedCommunities, setExpandedCommunities] = useState<Set<number>>(new Set());
@@ -122,6 +154,17 @@ export function Sidebar({
       });
     }
   }, [warningCount]);
+
+  useEffect(() => {
+    if (tours.length > 0) {
+      setExpandedPanels(prev => {
+        if (prev.has(6)) return prev;
+        const next = new Set(prev);
+        next.add(6);
+        return next;
+      });
+    }
+  }, [tours.length]);
 
   const togglePanel = (panel: number) => {
     setExpandedPanels(prev => {
@@ -432,6 +475,90 @@ export function Sidebar({
           </ul>
         )}
       </div>
+
+      <AccordionSection
+        title="Narrated Tours"
+        icon={'\u{1F399}'}
+        isExpanded={expandedPanels.has(6)}
+        onToggle={() => togglePanel(6)}
+        badge={tours.length || ''}
+      >
+        {tours.length === 0 ? (
+          <div style={{ color: '#8b949e', fontSize: 11, padding: '4px 0' }}>
+            No tours yet. Ask an architecture question to generate one.
+          </div>
+        ) : (
+          <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {tours.map(tour => {
+              const id = tour.id ?? '';
+              const isActive = id === activeTourId;
+              const isPlaying = isActive && tourActive;
+              const d = new Date(tour.timestamp ?? 0);
+              const label = tour.title ||
+                `Tour @ ${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+              return (
+                <li
+                  key={id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    flexWrap: isPlaying ? 'wrap' : 'nowrap',
+                    gap: 6,
+                    padding: '6px 8px',
+                    borderRadius: 4,
+                    border: `1px solid ${isActive ? '#00f3ff' : '#21262d'}`,
+                    background: isActive ? 'rgba(0,243,255,0.06)' : 'transparent',
+                  }}
+                >
+                  <div
+                    onClick={() => isActive ? onStopTour() : onPreviewTour(id)}
+                    title={isActive ? "Click to clear focus" : "Click to preview/focus nodes"}
+                    style={{ flex: 1, minWidth: 0, cursor: 'pointer' }}
+                    onMouseEnter={(e) => {
+                      const titleNode = e.currentTarget.firstElementChild as HTMLElement;
+                      if (titleNode) titleNode.style.color = '#00f3ff';
+                    }}
+                    onMouseLeave={(e) => {
+                      const titleNode = e.currentTarget.firstElementChild as HTMLElement;
+                      if (titleNode) titleNode.style.color = '#f0f6fc';
+                    }}
+                  >
+                    <div style={{
+                      color: '#f0f6fc',
+                      fontSize: 11,
+                      fontWeight: 600,
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      transition: 'color 150ms ease',
+                    }}>
+                      {label}
+                    </div>
+                    <div style={{ color: '#8b949e', fontSize: 9 }}>{tour.beats.length} beats</div>
+                  </div>
+                  {isPlaying ? (
+                    <>
+                      <button onClick={onReplayTour} title="Replay" style={tourIconBtn}>
+                        ↻
+                      </button>
+                      <button onClick={onStopTour} title="Stop" style={tourIconBtn}>
+                        ⏹
+                      </button>
+                    </>
+                  ) : (
+                    <button onClick={() => onPlayTour(id)} title="Play" style={tourIconBtn}>
+                      ▶
+                    </button>
+                  )}
+                  <button onClick={() => onDeleteTour(id)} title="Delete" style={tourIconBtn}>
+                    {'\u{1F5D1}'}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </AccordionSection>
 
       <AccordionSection
         title="Radar Alerts"

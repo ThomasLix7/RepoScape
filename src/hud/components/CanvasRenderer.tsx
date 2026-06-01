@@ -37,6 +37,15 @@ interface D3Edge {
   target: string;
 }
 
+// van Wijk pan-and-zoom flight state
+interface Flight {
+  t: number;
+  dur: number;
+  W: number;
+  to: { x: number; y: number; zoom: number };
+  interp: (t: number) => [number, number, number];
+}
+
 export class CanvasRenderer {
   private ctx: CanvasRenderingContext2D;
   private canvas: HTMLCanvasElement;
@@ -88,6 +97,7 @@ export class CanvasRenderer {
   // Camera spring frequency (rad/s). ~11 settles in ~0.35s with no overshoot.
   private readonly CAMERA_OMEGA = 11;
   private zoomVel = 0; // zoom velocity in log-zoom units/sec
+  private flight: Flight | null = null;
 
   // Accumulated time (s) driving the pulsing call-flow dots on focused edges.
   private flowPhase = 0;
@@ -267,10 +277,8 @@ export class CanvasRenderer {
   flyToNode(nodeId: string): void {
     const pos = this.nodePositions.get(nodeId);
     if (!pos) return;
-    this.camera.targetX = pos.x;
-    this.camera.targetY = pos.y;
-    this.camera.targetZoom = Math.max(this.camera.targetZoom, 1.2);
     this.userInteracted = true;
+    this.setCameraTarget(pos.x, pos.y, Math.max(this.camera.targetZoom, 1.2));
   }
 
   flyToEdge(edge: GraphEdge): void {
@@ -304,10 +312,83 @@ export class CanvasRenderer {
     const pad = 180;
     const gw = (maxX - minX) + pad * 2;
     const gh = (maxY - minY) + pad * 2;
-    this.camera.targetX = (minX + maxX) / 2;
-    this.camera.targetY = (minY + maxY) / 2;
-    this.camera.targetZoom = Math.max(0.6, Math.min(2.2, Math.min(rect.width / gw, rect.height / gh)));
     this.userInteracted = true;
+    this.setCameraTarget(
+      (minX + maxX) / 2,
+      (minY + maxY) / 2,
+      Math.max(0.6, Math.min(2.2, Math.min(rect.width / gw, rect.height / gh)))
+    );
+  }
+
+  // Set camera target
+  private setCameraTarget(x: number, y: number, zoom: number): void {
+    this.camera.targetX = x;
+    this.camera.targetY = y;
+    this.camera.targetZoom = zoom;
+    const rect = this.canvas.getBoundingClientRect();
+    if (rect.width === 0) { this.flight = null; return; }
+    const sdx = (x - this.camera.x) * this.camera.zoom;
+    const sdy = (y - this.camera.y) * this.camera.zoom;
+    const offscreen =
+      Math.abs(sdx) > rect.width * 0.45 || Math.abs(sdy) > rect.height * 0.45;
+    if (!offscreen) { this.flight = null; return; }
+
+    const { interp, duration } = this.interpolateZoom(
+      [this.camera.x, this.camera.y, rect.width / this.camera.zoom],
+      [x, y, rect.width / zoom]
+    );
+    if (!Number.isFinite(duration)) { this.flight = null; return; }
+    this.flight = {
+      t: 0,
+      dur: Math.max(450, Math.min(800, duration)),
+      W: rect.width,
+      to: { x, y, zoom },
+      interp,
+    };
+  }
+
+  private cancelFlight(): void {
+    if (!this.flight) return;
+    this.flight = null;
+    this.camera.vx = 0;
+    this.camera.vy = 0;
+    this.zoomVel = 0;
+  }
+
+  // van Wijk (2003)
+  private interpolateZoom(
+    p0: [number, number, number],
+    p1: [number, number, number]
+  ): { interp: (t: number) => [number, number, number]; duration: number } {
+    const rho = Math.SQRT2, rho2 = 2, rho4 = 4;
+    const [ux0, uy0, w0] = p0;
+    const [ux1, uy1, w1] = p1;
+    const dx = ux1 - ux0, dy = uy1 - uy0;
+    const d2 = dx * dx + dy * dy;
+    const cosh = (x: number) => (Math.exp(x) + Math.exp(-x)) / 2;
+    const sinh = (x: number) => (Math.exp(x) - Math.exp(-x)) / 2;
+    const tanh = (x: number) => { const e = Math.exp(2 * x); return (e - 1) / (e + 1); };
+
+    let interp: (t: number) => [number, number, number];
+    let S: number;
+    if (d2 < 1e-9) {
+      S = Math.abs(Math.log(w1 / w0)) / rho;
+      interp = (t) => [ux0 + t * dx, uy0 + t * dy, w0 * Math.pow(w1 / w0, t)];
+    } else {
+      const d1 = Math.sqrt(d2);
+      const b0 = (w1 * w1 - w0 * w0 + rho4 * d2) / (2 * w0 * rho2 * d1);
+      const b1 = (w1 * w1 - w0 * w0 - rho4 * d2) / (2 * w1 * rho2 * d1);
+      const r0 = Math.log(Math.sqrt(b0 * b0 + 1) - b0);
+      const r1 = Math.log(Math.sqrt(b1 * b1 + 1) - b1);
+      S = (r1 - r0) / rho;
+      const coshr0 = cosh(r0);
+      interp = (t) => {
+        const s = t * S;
+        const u = w0 / (rho2 * d1) * (coshr0 * tanh(rho * s + r0) - sinh(r0));
+        return [ux0 + u * dx, uy0 + u * dy, w0 * coshr0 / cosh(rho * s + r0)];
+      };
+    }
+    return { interp, duration: Math.abs(S) * 1000 };
   }
 
   private hexToRgbStr(hex: string): string {
@@ -363,6 +444,7 @@ export class CanvasRenderer {
           this.d3Simulation?.alpha(0.3).restart();
         }
       } else {
+        this.cancelFlight();
         this.isDragging = true;
         this.didPan = false;
         this.lastMouse = { x: e.clientX, y: e.clientY };
@@ -426,6 +508,7 @@ export class CanvasRenderer {
 
     this.canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
+      this.cancelFlight();
       this.userInteracted = true;
       const factor = e.deltaY > 0 ? 0.9 : 1.1;
       this.camera.targetZoom = Math.max(0.1, Math.min(5, this.camera.targetZoom * factor));
@@ -514,6 +597,25 @@ export class CanvasRenderer {
 
   private updateCamera(dtMs: number = 16.67): void {
     const h = Math.min(dtMs, 50) / 1000; // seconds; clamp long stalls
+
+    if (this.flight) {
+      this.flight.t += h * 1000;
+      const raw = Math.min(1, this.flight.t / this.flight.dur);
+      const e = raw * raw * (3 - 2 * raw);
+      const [cx, cy, w] = this.flight.interp(e);
+      this.camera.x = cx;
+      this.camera.y = cy;
+      this.camera.zoom = this.flight.W / w;
+      if (raw >= 1) {
+        const to = this.flight.to;
+        this.camera.x = to.x; this.camera.y = to.y; this.camera.zoom = to.zoom;
+        this.camera.targetX = to.x; this.camera.targetY = to.y; this.camera.targetZoom = to.zoom;
+        this.camera.vx = 0; this.camera.vy = 0; this.zoomVel = 0;
+        this.flight = null;
+      }
+      return;
+    }
+
     const omega = this.CAMERA_OMEGA;
 
     const rx = this.springStep(this.camera.x, this.camera.vx, this.camera.targetX, omega, h);
@@ -664,9 +766,7 @@ export class CanvasRenderer {
         }
         this.focusCameraOnNodes(focusedIds);
       } else if (this.preFocusCamera) {
-        this.camera.targetX = this.preFocusCamera.x;
-        this.camera.targetY = this.preFocusCamera.y;
-        this.camera.targetZoom = this.preFocusCamera.zoom;
+        this.setCameraTarget(this.preFocusCamera.x, this.preFocusCamera.y, this.preFocusCamera.zoom);
         this.preFocusCamera = null;
       }
       this.lastFocusSignature = focusSig;
@@ -769,6 +869,16 @@ export class CanvasRenderer {
         const targetPos = this.nodePositions.get(edge.target);
         if (!sourcePos || !targetPos) continue;
 
+        const sxA = (sourcePos.x - this.camera.x) * zoom + cx;
+        const syA = (sourcePos.y - this.camera.y) * zoom + cy;
+        const sxB = (targetPos.x - this.camera.x) * zoom + cx;
+        const syB = (targetPos.y - this.camera.y) * zoom + cy;
+        const em = 60;
+        if (
+          (sxA < -em && sxB < -em) || (sxA > w + em && sxB > w + em) ||
+          (syA < -em && syB < -em) || (syA > h + em && syB > h + em)
+        ) continue;
+
         // -1 = no focus active (show all); else 2 core / 1 neighbor / 0 background.
         const tier = focusActive ? edgeTier(edge) : -1;
         const a = tier === -1 ? 1 : tier === 2 ? 1 : tier === 1 ? 0.3 : 0.04;
@@ -811,8 +921,6 @@ export class CanvasRenderer {
             edge.type === 'COGNITIVE' ? '#bd93f9' :
             edge.score >= 0.8 ? '#ff5555' : '#ffb86c';
           ctx.fillStyle = flowColor;
-          ctx.shadowColor = flowColor;
-          ctx.shadowBlur = 6;
           const dotR = (isCore ? 2.6 : 1.8) / Math.max(0.6, zoom);
           for (let k = 0; k < DOTS; k++) {
             const frac = (this.flowPhase * SPEED + k / DOTS) % 1;
@@ -825,7 +933,6 @@ export class CanvasRenderer {
             ctx.fill();
           }
           ctx.globalAlpha = 1;
-          ctx.shadowBlur = 0;
         }
       }
     }

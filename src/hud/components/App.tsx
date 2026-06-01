@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
-import { connectHUD, GraphNode, GraphEdge, GraphDiff, HUDConnection, Tour, CommunitySummary, NeighborsContext, Neighbor } from '../connection.js';
+import { connectHUD, fetchTours, deleteTourReq, GraphNode, GraphEdge, GraphDiff, HUDConnection, Tour, CommunitySummary, NeighborsContext, Neighbor } from '../connection.js';
 import { CanvasRenderer } from './CanvasRenderer.js';
 import { Sidebar } from './Sidebar.js';
 
@@ -11,28 +11,6 @@ const CHANGED_TTL_MS = 10000;
 // Let the camera fly/frame the beat's nodes before the narration starts speaking,
 // so the voice lands on a view that has already arrived ("指哪说哪").
 const BEAT_SPEAK_DELAY_MS = 400;
-
-// Tour control buttons live inside the subtitle box (icon + text).
-const tourBtnStyle: React.CSSProperties = {
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 6,
-  padding: '8px 14px',
-  borderRadius: 999,
-  border: '1px solid #00f3ff',
-  background: 'rgba(0,243,255,0.12)',
-  color: '#00f3ff',
-  font: '600 13px system-ui, sans-serif',
-  whiteSpace: 'nowrap',
-  cursor: 'pointer',
-};
-
-// Filled variant used to highlight the primary action (resume after a pause).
-const tourBtnPrimaryStyle: React.CSSProperties = {
-  ...tourBtnStyle,
-  background: '#00f3ff',
-  color: '#0d1117',
-};
 
 function getToken(): string {
   return INITIAL_TOKEN;
@@ -100,16 +78,32 @@ export function App() {
 
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Narrated tour: a tour arrives over WS and waits for a one-click start
-  // (browsers block speechSynthesis until a user gesture).
-  const [loadedTour, setLoadedTour] = useState<Tour | null>(null);
+  // Narrated tours: persisted history loaded on mount + live appends over WS. The
+  // selected tour waits for a one-click start (browsers block speechSynthesis until a
+  // user gesture).
+  const [tours, setTours] = useState<Tour[]>([]);
+  const [activeTourId, setActiveTourId] = useState<string | null>(null);
   const [tourActive, setTourActive] = useState(false);
   const [paused, setPaused] = useState(false);
   const [subtitle, setSubtitle] = useState('');
+  const [beatIdx, setBeatIdx] = useState(0);
   const tourRef = useRef<{ beats: Tour['beats']; idx: number } | null>(null);
   const pausedRef = useRef(false);
+  // Mirror of tourActive read inside handleTour, which must stay referentially stable
+  // (it's a dep of the connection effect) — reading the state directly would either go
+  // stale or force a WS reconnect on every play/stop.
+  const tourActiveRef = useRef(false);
+  const setTourActiveBoth = useCallback((v: boolean) => {
+    tourActiveRef.current = v;
+    setTourActive(v);
+  }, []);
   const beatTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const activeTour = useMemo(
+    () => tours.find((t) => t.id === activeTourId) ?? null,
+    [tours, activeTourId]
+  );
 
   const [activeFileTypes, setActiveFileTypes] = useState<Set<string>>(
     new Set(['code', 'document', 'concept'])
@@ -220,12 +214,13 @@ export function App() {
       tourRef.current = null;
       pausedRef.current = false;
       applyFocusByIds(new Set());
-      setTourActive(false);
+      setTourActiveBoth(false);
       setPaused(false);
       setSubtitle('');
       return;
     }
     const beat = t.beats[t.idx];
+    setBeatIdx(t.idx);
     // Move the camera/highlight first (ids matching no node are silently skipped).
     applyFocusByIds(new Set(beat.nodes));
     setSubtitle(beat.say);
@@ -259,25 +254,20 @@ export function App() {
         watchdogRef.current = setTimeout(advance, estMs);
       }
     }, BEAT_SPEAK_DELAY_MS);
-  }, [applyFocusByIds]);
+  }, [applyFocusByIds, setTourActiveBoth]);
 
+  // Handle incoming WS tour updates
   const handleTour = useCallback((tour: Tour) => {
-    // A new tour interrupts any running one; it waits for a one-click start.
-    // Null tourRef before cancel() so a cancel-fired onend can't advance the old tour.
-    tourRef.current = null;
-    if (typeof window !== 'undefined') window.speechSynthesis?.cancel();
-    if (beatTimerRef.current) { clearTimeout(beatTimerRef.current); beatTimerRef.current = null; }
-    if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
-    applyFocusByIds(new Set());
-    setTourActive(false);
-    setPaused(false);
-    pausedRef.current = false;
-    setSubtitle('');
-    setLoadedTour(tour);
-  }, [applyFocusByIds]);
+    setTours((prev) => {
+      const next = prev.filter((t) => t.id !== tour.id); // upsert: GET may already hold it
+      return [tour, ...next].sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
+    });
+    if (!tourActiveRef.current && tour.id) {
+      setActiveTourId(tour.id);
+    }
+  }, []);
 
-  // Pause freezes the tour on the current beat: cancel in-flight speech and timers
-  // but keep tourRef/idx so resume can pick up the same beat.
+  // Pause active tour
   const pauseTour = useCallback(() => {
     pausedRef.current = true;
     if (typeof window !== 'undefined') window.speechSynthesis?.cancel();
@@ -293,27 +283,56 @@ export function App() {
     playBeat();
   }, [playBeat]);
 
-  const startTour = useCallback(() => {
-    if (!loadedTour) return;
-    pausedRef.current = false;
-    setPaused(false);
-    tourRef.current = { beats: loadedTour.beats, idx: 0 };
-    setTourActive(true);
-    playBeat();
-  }, [loadedTour, playBeat]);
-
-  // Replay restarts from the first beat, cancelling anything currently in flight.
-  const replayTour = useCallback(() => {
-    if (!loadedTour) return;
+  const startTour = useCallback((id?: string) => {
+    const tour = id ? tours.find((t) => t.id === id) ?? null : activeTour;
+    if (!tour) return;
+    if (id && id !== activeTourId) setActiveTourId(id);
     if (typeof window !== 'undefined') window.speechSynthesis?.cancel();
     if (beatTimerRef.current) { clearTimeout(beatTimerRef.current); beatTimerRef.current = null; }
     if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
     pausedRef.current = false;
     setPaused(false);
-    tourRef.current = { beats: loadedTour.beats, idx: 0 };
-    setTourActive(true);
+    tourRef.current = { beats: tour.beats, idx: 0 };
+    setTourActiveBoth(true);
     playBeat();
-  }, [loadedTour, playBeat]);
+  }, [tours, activeTour, activeTourId, playBeat, setTourActiveBoth]);
+
+
+  const replayTour = useCallback(() => {
+    startTour(activeTourId ?? undefined);
+  }, [startTour, activeTourId]);
+
+  const dismissTour = useCallback(() => {
+    tourRef.current = null;
+    pausedRef.current = false;
+    if (typeof window !== 'undefined') window.speechSynthesis?.cancel();
+    if (beatTimerRef.current) { clearTimeout(beatTimerRef.current); beatTimerRef.current = null; }
+    if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
+    applyFocusByIds(new Set());
+    setTourActiveBoth(false);
+    setPaused(false);
+    setSubtitle('');
+    setActiveTourId(null);
+  }, [applyFocusByIds, setTourActiveBoth]);
+
+  const previewTour = useCallback((id: string) => {
+    const tour = tours.find((t) => t.id === id);
+    if (!tour) return;
+    setActiveTourId(id);
+    const ids = new Set<string>();
+    for (const beat of tour.beats) for (const n of beat.nodes) ids.add(n);
+    applyFocusByIds(ids);
+    rendererRef.current?.flyToNodes(Array.from(ids));
+  }, [tours, applyFocusByIds]);
+
+  const removeTour = useCallback((id: string) => {
+    deleteTourReq(getToken(), id)
+      .then(() => {
+        setTours((prev) => prev.filter((t) => t.id !== id));
+        if (id === activeTourId) dismissTour();
+      })
+      .catch(() => {});
+  }, [activeTourId, dismissTour]);
 
   useEffect(() => {
     return () => {
@@ -321,6 +340,12 @@ export function App() {
       if (beatTimerRef.current) clearTimeout(beatTimerRef.current);
       if (watchdogRef.current) clearTimeout(watchdogRef.current);
     };
+  }, []);
+
+  useEffect(() => {
+    const token = getToken();
+    if (!token) return;
+    fetchTours(token).then(setTours).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -605,12 +630,12 @@ export function App() {
         ref={canvasRef}
         style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'block', cursor: 'grab' }}
       />
-      {loadedTour && !tourActive && (
+      {activeTour && !tourActive && (
         <button
-          onClick={startTour}
+          onClick={() => startTour()}
           style={{
             position: 'fixed',
-            bottom: 24,
+            bottom: 28,
             left: '50%',
             transform: 'translateX(-50%)',
             zIndex: 10,
@@ -624,53 +649,93 @@ export function App() {
             boxShadow: '0 2px 16px rgba(0,243,255,0.35)',
           }}
         >
-          {`▶ Play Tour (${loadedTour.beats.length})`}
+          {`▶ Play Tour (${activeTour.beats.length})`}
         </button>
       )}
       {tourActive && (
         <div
+          onClick={paused ? resumeTour : pauseTour}
+          title={paused ? 'Click to resume' : 'Click to pause'}
           style={{
             position: 'fixed',
-            bottom: 24,
+            bottom: 28,
             left: '50%',
             transform: 'translateX(-50%)',
             zIndex: 10,
             display: 'flex',
             alignItems: 'center',
-            gap: 18,
-            width: 'min(860px, 88vw)',
-            padding: '12px 14px 12px 22px',
-            borderRadius: 16,
-            border: '1px solid rgba(0,243,255,0.35)',
-            background: 'rgba(13,17,23,0.6)',
-            backdropFilter: 'blur(12px)',
-            WebkitBackdropFilter: 'blur(12px)',
-            color: '#e6edf3',
-            boxShadow: '0 8px 32px rgba(0,0,0,0.45)',
+            gap: 14,
+            maxWidth: 'min(820px, 86vw)',
+            padding: '10px 20px',
+            borderRadius: 14,
+            border: '1px solid rgba(0,243,255,0.18)',
+            background: 'rgba(13,17,23,0.42)',
+            backdropFilter: 'blur(14px) saturate(140%)',
+            WebkitBackdropFilter: 'blur(14px) saturate(140%)',
+            color: '#f0f6fc',
+            boxShadow: '0 8px 30px rgba(0,0,0,0.4)',
+            cursor: 'pointer',
             animation: 'tourBoxIn 260ms cubic-bezier(0.16, 1, 0.3, 1)',
           }}
         >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              flexShrink: 0,
+            }}
+          >
+            <div
+              style={{
+                width: 32,
+                height: 32,
+                borderRadius: 8,
+                border: '1px solid rgba(0,243,255,0.3)',
+                background: 'rgba(0,243,255,0.08)',
+                color: '#00f3ff',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 14,
+                boxShadow: '0 0 8px rgba(0,243,255,0.15)',
+                transition: 'all 150ms ease',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'rgba(0,243,255,0.2)';
+                e.currentTarget.style.transform = 'scale(1.1)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'rgba(0,243,255,0.08)';
+                e.currentTarget.style.transform = 'scale(1)';
+              }}
+            >
+              {paused ? '▶' : '⏸'}
+            </div>
+            <span
+              style={{
+                font: '700 11px system-ui, sans-serif',
+                letterSpacing: 0.4,
+                color: '#00f3ff',
+                opacity: 0.85,
+                fontVariantNumeric: 'tabular-nums',
+              }}
+            >
+              {Math.min(beatIdx + 1, activeTour?.beats.length ?? 0)}/{activeTour?.beats.length ?? 0}
+            </span>
+          </div>
           <span
             style={{
               flex: 1,
               minWidth: 0,
-              font: '500 17px/1.5 system-ui, sans-serif',
+              font: '500 16px/1.5 system-ui, sans-serif',
               textAlign: 'left',
+              opacity: subtitle ? (paused ? 0.5 : 1) : 0,
+              transition: 'opacity 320ms ease',
             }}
           >
             {renderRichSubtitle(subtitle)}
           </span>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0 }}>
-            <button
-              onClick={paused ? resumeTour : pauseTour}
-              style={paused ? tourBtnPrimaryStyle : tourBtnStyle}
-            >
-              {paused ? '▶ Resume' : '⏸ Pause'}
-            </button>
-            <button onClick={replayTour} style={tourBtnStyle}>
-              ↻ Replay
-            </button>
-          </div>
         </div>
       )}
       <Sidebar
@@ -704,6 +769,14 @@ export function App() {
         selectedNodeNeighbors={selectedNodeNeighbors}
         hubNodes={hubNodes}
         baseFilteredNodes={baseFilteredNodes}
+        tours={tours}
+        activeTourId={activeTourId}
+        tourActive={tourActive}
+        onPlayTour={(id) => startTour(id)}
+        onReplayTour={replayTour}
+        onStopTour={dismissTour}
+        onPreviewTour={previewTour}
+        onDeleteTour={removeTour}
       />
     </div>
   );
