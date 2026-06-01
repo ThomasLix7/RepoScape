@@ -3,7 +3,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { authMiddleware } from './security.js';
 import { validateCognitiveChunk, validateTour } from './security.js';
-import { writeCacheAtomic, ensureDir, hashSourceFile } from './cache.js';
+import { writeCacheAtomic, ensureDir, hashSourceFile, saveTour, listTours, deleteTour, generateTourId, isValidTourId } from './cache.js';
 import { GraphCompiler } from './compiler.js';
 import { compileRulePattern } from './boundaries.js';
 import { appendErrorLog } from './logger.js';
@@ -224,13 +224,38 @@ export function createRoutes(
     res.json({ focus: active });
   });
 
-  router.post('/api/tour', (req: Request, res: Response) => {
+  router.post('/api/tour', async (req: Request, res: Response) => {
     try {
       if (!validateTour(req.body)) {
-        res.status(400).json({ error: 'Invalid tour: expected { beats: [{ say, nodes[] }] }' });
+        res.status(400).json({ error: 'Invalid tour: expected { beats: [{ say, nodes[] }], title? }' });
         return;
       }
-      if (broadcastTour) broadcastTour(req.body);
+      const tour: Tour = { ...req.body, id: generateTourId(), timestamp: Date.now() };
+      await saveTour(projectRoot, tour);
+      if (broadcastTour) broadcastTour(tour);
+      res.json({ ok: true, id: tour.id });
+    } catch (err: any) {
+      await appendErrorLog(projectRoot, `Failed to persist tour: ${err.message}`);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.get('/api/tours', async (_req: Request, res: Response) => {
+    try {
+      res.json({ tours: await listTours(projectRoot) });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.delete('/api/tours/:id', async (req: Request, res: Response) => {
+    try {
+      const id = String(req.params.id);
+      if (!isValidTourId(id)) {
+        res.status(400).json({ error: 'Invalid tour id' });
+        return;
+      }
+      await deleteTour(projectRoot, id);
       res.json({ ok: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });

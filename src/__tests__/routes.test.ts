@@ -267,6 +267,86 @@ describe('Routes', () => {
     });
   });
 
+  describe('Tour persistence', () => {
+    let server5: Server;
+    let base5: string;
+    let root5: string;
+    let handle5: RoutesHandle;
+
+    beforeAll(async () => {
+      root5 = await fs.mkdtemp(path.join(os.tmpdir(), 'reposcape-tours-route-'));
+      const app5 = express();
+      app5.use(express.json());
+      handle5 = createRoutes(root5, makeMockCompiler(), undefined, undefined, () => {});
+      app5.use(handle5.router);
+      server5 = createServer(app5);
+      await new Promise<void>((resolve) => server5.listen(0, () => resolve()));
+      const addr = server5.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      base5 = `http://127.0.0.1:${port}`;
+    });
+
+    afterAll(async () => {
+      handle5.cleanup();
+      server5.close();
+      await fs.rm(root5, { recursive: true, force: true });
+    });
+
+    it('POST assigns an id, persists, and GET lists it with the title', async () => {
+      const res = await fetch(`${base5}/api/tour`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ title: 'Auth Flow', beats: [{ say: 'hi', nodes: ['n1'] }] }),
+      });
+      const body = await res.json();
+      expect(res.status).toBe(200);
+      expect(body.id).toMatch(/^[a-z0-9-]+$/);
+
+      const getRes = await fetch(`${base5}/api/tours`, { headers: authHeaders() });
+      const getBody = await getRes.json();
+      const found = getBody.tours.find((t: any) => t.id === body.id);
+      expect(found).toBeDefined();
+      expect(found.title).toBe('Auth Flow');
+      expect(found.timestamp).toBeGreaterThan(0);
+    });
+
+    it('DELETE removes a tour', async () => {
+      const postRes = await fetch(`${base5}/api/tour`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ beats: [{ say: 'bye', nodes: ['n2'] }] }),
+      });
+      const { id } = await postRes.json();
+
+      const delRes = await fetch(`${base5}/api/tours/${id}`, {
+        method: 'DELETE',
+        headers: authHeaders(),
+      });
+      expect(delRes.status).toBe(200);
+
+      const getRes = await fetch(`${base5}/api/tours`, { headers: authHeaders() });
+      const getBody = await getRes.json();
+      expect(getBody.tours.some((t: any) => t.id === id)).toBe(false);
+    });
+
+    it('DELETE rejects an invalid id', async () => {
+      const res = await fetch(`${base5}/api/tours/..%2Fescape`, {
+        method: 'DELETE',
+        headers: authHeaders(),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects a non-string title', async () => {
+      const res = await fetch(`${base5}/api/tour`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ title: 123, beats: [{ say: 'x', nodes: ['n'] }] }),
+      });
+      expect(res.status).toBe(400);
+    });
+  });
+
   describe('POST /api/insights/batch', () => {
     it('should return refresh: cache_only when no broadcast function', async () => {
       const app2 = express();
