@@ -321,9 +321,16 @@ Workflow:
 
 ### Narrated Tour (default when the daemon is live)
 
-After composing the textual answer you SHOULD drive a synchronized narration: the HUD speaks
-each line aloud while highlighting the node(s) it is about and moving the camera to them. The
-textual answer still prints in chat as normal — the tour is an additive layer, not a replacement.
+After composing the textual answer you MUST drive a synchronized narration: the HUD speaks
+each line aloud while highlighting the node(s) it is about and moving the camera to them.
+
+When the daemon is live the tour is the **primary** explanation channel, so keep the chat text
+**lean**: lead with the core conclusion plus the concrete paths, hubs, cycles, and affected files
+that need clickable local links — then let the tour carry the walkthrough. Do **not** pad the chat
+answer into a self-contained essay that re-explains everything the tour will say; the text need not
+stand fully on its own. There is no fixed line cap — a genuinely complex question may warrant more
+prose — but default to the shortest answer that names the answer, and **never** drop the tour to
+save effort. A verbose wall of text with no tour is the failure this skill exists to prevent.
 
 This is the **default** for architecture answers, not an optional extra. Whenever the Execution
 Guard passed and you already hold the Step-1 `GET /api/graph` result, emit a tour. Skip it only
@@ -359,10 +366,14 @@ node ids it covers:
   default voice, which mispronounces text in any other language, so only omit if you genuinely
   cannot tell.
 
-Then `POST http://localhost:5173/api/tour` (with the bearer token):
+Then `POST http://localhost:5173/api/tour` (with the bearer token). Always include a
+short `title` (a few words naming what the tour covers, e.g. `"Auth Flow"`) in the
+conversation language — the HUD lists persisted tours by this title, falling back to a
+timestamp when it is absent. Do **not** send `id` or `timestamp`; the daemon assigns them.
 
 ```json
 {
+  "title": "守护进程启动链路",
   "beats": [
     { "say": "入口在 daemon.ts，它启动了 watcher 和 websocket。", "lang": "zh-CN",
       "nodes": ["<exact id from GET /api/graph>", "<exact websocket id>"] },
@@ -372,9 +383,13 @@ Then `POST http://localhost:5173/api/tour` (with the bearer token):
 }
 ```
 
-A `200 { ok: true }` means the tour was broadcast; the HUD shows a one-click
-`▶ Play Tour (N)` button — N is the beat count — (browsers require a user gesture before
-speaking) and then plays the beats in order, toggling to `⏹ Stop Tour` while it runs.
+A `200 { ok: true, id }` means the tour was persisted and broadcast; the HUD shows a
+one-click `▶ Play Tour (N)` button — N is the beat count — (browsers require a user
+gesture before speaking) and plays the beats in order, toggling to `⏹ Stop Tour` while it
+runs. Every tour is also kept in the Sidebar's **Narrated Tours** list (under
+`.reposcape/tours/`, capped at the 50 most recent) so it can be replayed, focused, or
+deleted later. A new tour posted while one is playing is appended silently without
+interrupting playback.
 
 ## Node IDs & Context-Efficient Queries
 
