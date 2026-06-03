@@ -87,7 +87,7 @@ RepoScape is two things in one repo, and you install them separately:
 | Part | What it is | How you get it |
 | --- | --- | --- |
 | **The skill** | `skills/reposcape/SKILL.md` — the instruction set your coding agent loads to extract the cognitive layer, answer architecture questions, and drive tours | `npx skills` |
-| **The app** | The daemon + HUD that compiles and renders the graph | Clone + `npm` (not yet published to npm) |
+| **The app** | The daemon + HUD that compiles and renders the graph | `npm i -g reposcape` |
 
 The skill is the heart of RepoScape — the cognitive layer, narrated tours, and
 topology-aware answers all come from your coding agent following it. The app is the
@@ -155,8 +155,7 @@ reposcape                 # parse + watch the current repo, open the HUD
 
 The daemon compiles the initial graph in well under a second, starts a file watcher,
 serves the HUD on `http://localhost:5173`, and opens your browser. Edit files and watch
-the graph update in real time. Until RepoScape is published to npm, it runs from a clone
-(a global `reposcape` command is available via `npm link` inside the repo).
+the graph update in real time. Install globally via npm using `npm install -g reposcape`.
 
 Useful flags:
 
