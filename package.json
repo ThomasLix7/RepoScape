@@ -5,6 +5,9 @@
   "bin": {
     "reposcape": "./dist/server/daemon.js"
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build:hud": "vite build && cp dist/hud/hud.html dist/hud/index.html",
     "build:server": "tsc",
