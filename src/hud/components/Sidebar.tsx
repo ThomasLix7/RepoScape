@@ -214,6 +214,7 @@ export function Sidebar({
     disconnected: '#ff5555',
     failed_permanently: '#ff5555',
     no_token: '#ff5555',
+    static_demo: '#00f3ff',
   };
   const statusColor = statusColors[status] || '#8b949e';
 
@@ -349,7 +350,7 @@ export function Sidebar({
             }}
           />
           <span style={{ color: statusColor, fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.3px' }}>
-            {status === 'disconnected' ? `RECONNECTING (${attemptsLeft})` : status}
+            {status === 'disconnected' ? `RECONNECTING (${attemptsLeft})` : (status === 'static_demo' ? 'DEMO MODE' : status)}
           </span>
         </div>
       </div>

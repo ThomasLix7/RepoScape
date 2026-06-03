@@ -1,0 +1,335 @@
+[
+  {
+    "title": "1. RepoScape Architecture Overview",
+    "beats": [
+      {
+        "say": "RepoScape is divided into a Node.js daemon backend and a web-based HTML5 HUD frontend.",
+        "lang": "en-US",
+        "nodes": [
+          "src_server_daemon.ts",
+          "src_hud_components_app.tsx"
+        ]
+      },
+      {
+        "say": "The entrypoint is daemon.ts, which boots the HTTP server, the WebSocket server, and the file watcher.",
+        "lang": "en-US",
+        "nodes": [
+          "src_server_daemon.ts"
+        ]
+      },
+      {
+        "say": "The AST compiler in compiler.ts parses source code and clusters files into modular communities using Louvain's algorithm.",
+        "lang": "en-US",
+        "nodes": [
+          "src_server_compiler.ts"
+        ]
+      },
+      {
+        "say": "Under the hood, parser.ts utilizes pre-compiled WASM Tree-Sitter grammars to incrementally extract import edges and structural tokens.",
+        "lang": "en-US",
+        "nodes": [
+          "src_server_parser.ts"
+        ]
+      },
+      {
+        "say": "A background file watcher in watcher.ts monitors source code edits to trigger incremental recompilations in real-time.",
+        "lang": "en-US",
+        "nodes": [
+          "src_server_watcher.ts"
+        ]
+      },
+      {
+        "say": "On the frontend, App.tsx orchestrates WebSocket state synchronization, play-pause controls, and sidebar components.",
+        "lang": "en-US",
+        "nodes": [
+          "src_hud_components_app.tsx"
+        ]
+      },
+      {
+        "say": "Finally, CanvasRenderer.tsx renders physical, cognitive, and warning edges, driving smooth camera flights to focused nodes.",
+        "lang": "en-US",
+        "nodes": [
+          "src_hud_components_canvasrenderer.tsx"
+        ]
+      }
+    ],
+    "id": "tour-1-architecture-overview",
+    "timestamp": 1780345000003
+  },
+  {
+    "title": "2. Architectural Safety Radar & Cycles",
+    "beats": [
+      {
+        "say": "The Architectural Safety Radar flags structural risk on the HUD canvas in real-time.",
+        "lang": "en-US",
+        "nodes": [
+          "src_server_boundaries.ts",
+          "src_server_cycles.ts"
+        ]
+      },
+      {
+        "say": "First, boundaries.ts compiles rule patterns declared in architecture_rules.json and flags unauthorized dependencies.",
+        "lang": "en-US",
+        "nodes": [
+          "src_server_boundaries.ts"
+        ]
+      },
+      {
+        "say": "Second, cycles.ts runs depth-first search cycle detection to automatically flag circular imports in the physical codebase.",
+        "lang": "en-US",
+        "nodes": [
+          "src_server_cycles.ts"
+        ]
+      },
+      {
+        "say": "The ModuleResolver in resolver.ts maps relative import paths to exact files, making dependency and cycle detection highly precise.",
+        "lang": "en-US",
+        "nodes": [
+          "src_server_resolver.ts"
+        ]
+      },
+      {
+        "say": "Violations are streamed as SUSPICIOUS edges over WebSockets and listed in the Sidebar component for immediate review.",
+        "lang": "en-US",
+        "nodes": [
+          "src_server_routes.ts",
+          "src_hud_components_sidebar.tsx"
+        ]
+      }
+    ],
+    "id": "tour-2-safety-radar",
+    "timestamp": 1780345000002
+  },
+  {
+    "title": "3. Fused Code-Cognitive Graph & Agent Skill",
+    "beats": [
+      {
+        "say": "RepoScape's core innovation is the fusion of two graphs: the physical AST dependency graph and the agent-extracted cognitive graph.",
+        "lang": "en-US",
+        "nodes": [
+          "*"
+        ],
+        "showPhysical": true,
+        "showCognitive": true,
+        "showSuspicious": false
+      },
+      {
+        "say": "Here is the raw physical graph showing files and imports compiled by tree-sitter. We filter out the cognitive layer to see the codebase structure.",
+        "lang": "en-US",
+        "nodes": [
+          "src_server_compiler.ts",
+          "src_hud_components_canvasrenderer.tsx",
+          "src_server_routes.ts",
+          "src_server_parser.ts",
+          "src_hud_components_sidebar.tsx",
+          "src_server_daemon.ts",
+          "src_server_cache.ts",
+          "src_hud_components_app.tsx",
+          "src_server_security.ts",
+          "src_server_resolver.ts",
+          "src_server_types.ts",
+          "src_hud_warninggroups.ts",
+          "src_tests_routes.test.ts",
+          "src_hud_connection.ts",
+          "src_server_boundaries.ts",
+          "src_tests_cache.test.ts",
+          "src_server_websocket.ts",
+          "src_tests_boundariesroute.test.ts",
+          "src_server_routes.ts:createroutes",
+          "src_server_watcher.ts",
+          "src_tests_community.test.ts",
+          "src_tests_violations.test.ts",
+          "src_server_cache.ts:writecacheatomic",
+          "src_server_community.ts:runlouvainclustering"
+        ],
+        "showPhysical": true,
+        "showCognitive": false,
+        "showSuspicious": false
+      },
+      {
+        "say": "Now, we view only the cognitive layer. These nodes represent design trade-offs, concepts, and intentions extracted by the Agent from documentation.",
+        "lang": "en-US",
+        "nodes": [
+          "doc_docs_update_spec_v3_md_99b54b62",
+          "doc_docs_technical_design_and_decisions_md_31d6c35e",
+          "doc_docs_build_spec_md_dc97b65f",
+          "doc_docs_update_spec_v2_md_5c574f69",
+          "doc_docs_enhance_graph_spec_md_9655a084",
+          "doc_docs_update_spec_md_3aff5838",
+          "doc_docs_sidebar_upgrade_spec_md_3fabb132",
+          "concept_tour_persistence",
+          "concept_session_token_lifecycle",
+          "doc_docs_backlog_md_3dbeab39"
+        ],
+        "showPhysical": false,
+        "showCognitive": true,
+        "showSuspicious": false
+      },
+      {
+        "say": "The fusion happens in compiler.ts, where cognitive nodes are coupled directly to their physical code counterparts via rationale_for and COGNITIVE edges.",
+        "lang": "en-US",
+        "nodes": [
+          "src_tests_community.test.ts",
+          "src_tests_community.test.ts:physicalclique",
+          "src_tests_cycles.test.ts",
+          "src_server_community.ts",
+          "src_server_community.ts:runlouvainclustering",
+          "src_server_community.ts:rng",
+          "src_server_community.ts:stabilizecommunities",
+          "src_server_compiler.ts",
+          "src_server_compiler.ts:slugifydocumentid",
+          "src_server_compiler.ts:buildclusteringedges",
+          "src_server_compiler.ts:snapshotgraph",
+          "src_server_compiler.ts:diffgraphs",
+          "src_server_compiler.ts:getedgemapkey",
+          "src_server_compiler.ts:graphcompiler",
+          "src_server_compiler.ts:graphcompiler.setscoperoot",
+          "src_server_compiler.ts:graphcompiler.getscoperoot",
+          "src_server_compiler.ts:graphcompiler.assertparserready",
+          "src_server_compiler.ts:graphcompiler.init",
+          "src_server_compiler.ts:graphcompiler.loadarchitecturerules",
+          "src_server_compiler.ts:graphcompiler.migrateinsights",
+          "src_server_compiler.ts:graphcompiler.checkcacheversion",
+          "src_server_compiler.ts:graphcompiler.loadpersistedcommunities",
+          "src_server_compiler.ts:graphcompiler.savepersistedcommunities",
+          "src_server_compiler.ts:graphcompiler.enqueue",
+          "src_server_compiler.ts:graphcompiler.compileanddiff",
+          "src_server_compiler.ts:graphcompiler.compile",
+          "src_server_compiler.ts:graphcompiler.compileinternal",
+          "src_server_compiler.ts:graphcompiler.evictbyindex",
+          "src_server_compiler.ts:graphcompiler.parsefile",
+          "src_server_compiler.ts:graphcompiler.updateexportscacheasync",
+          "src_server_compiler.ts:graphcompiler.resolveimports",
+          "src_server_compiler.ts:graphcompiler.findfilenodeid",
+          "src_server_compiler.ts:graphcompiler.resolvebindingtonode",
+          "src_server_compiler.ts:graphcompiler.resolvecallgraph",
+          "src_server_compiler.ts:graphcompiler.loadcognitiveinsights",
+          "src_server_compiler.ts:graphcompiler.clearderiveddocumentconcepts",
+          "src_server_compiler.ts:graphcompiler.derivedocumentconcepts",
+          "src_server_compiler.ts:graphcompiler.edgealreadyexists",
+          "src_server_compiler.ts:graphcompiler.validatechunksources",
+          "src_server_compiler.ts:graphcompiler.schedulenext",
+          "src_server_compiler.ts:graphcompiler.reconciliationscan",
+          "src_server_compiler.ts:graphcompiler.findsourcefiles",
+          "src_server_compiler.ts:graphcompiler.walk",
+          "src_server_compiler.ts:graphcompiler.saveversion",
+          "src_server_compiler.ts:graphcompiler.getnodes",
+          "src_server_compiler.ts:graphcompiler.getedges",
+          "src_server_compiler.ts:graphcompiler.gethubnodes",
+          "src_server_compiler.ts:graphcompiler.getarchitecturerules",
+          "src_server_compiler.ts:graphcompiler.getcommunities",
+          "src_server_compiler.ts:graphcompiler.getdefaultexports",
+          "src_server_compiler.ts:graphcompiler.getfilebindings",
+          "src_server_compiler.ts:graphcompiler.getmoduleresolver",
+          "src_server_compiler.ts:graphcompiler.getrawimports",
+          "src_server_compiler.ts:graphcompiler.getfileexportscache",
+          "src_server_cycles.ts",
+          "src_server_cycles.ts:detectcycleedges",
+          "concept_canvas_vs_svg",
+          "concept_deterministic_community_stability",
+          "concept_live_agent_tracking",
+          "doc_docs_reposcape_vs_graphify_md_abef9393"
+        ],
+        "showPhysical": true,
+        "showCognitive": true,
+        "showSuspicious": false
+      },
+      {
+        "say": "During community detection, Louvain clustering runs on the combined topology, allowing cognitive design intent to influence code module boundaries.",
+        "lang": "en-US",
+        "nodes": [
+          "src_tests_community.test.ts",
+          "src_tests_community.test.ts:physicalclique",
+          "src_tests_cycles.test.ts",
+          "src_server_community.ts",
+          "src_server_community.ts:runlouvainclustering",
+          "src_server_community.ts:rng",
+          "src_server_community.ts:stabilizecommunities",
+          "src_server_compiler.ts",
+          "src_server_compiler.ts:slugifydocumentid",
+          "src_server_compiler.ts:buildclusteringedges",
+          "src_server_compiler.ts:snapshotgraph",
+          "src_server_compiler.ts:diffgraphs",
+          "src_server_compiler.ts:getedgemapkey",
+          "src_server_compiler.ts:graphcompiler",
+          "src_server_compiler.ts:graphcompiler.setscoperoot",
+          "src_server_compiler.ts:graphcompiler.getscoperoot",
+          "src_server_compiler.ts:graphcompiler.assertparserready",
+          "src_server_compiler.ts:graphcompiler.init",
+          "src_server_compiler.ts:graphcompiler.loadarchitecturerules",
+          "src_server_compiler.ts:graphcompiler.migrateinsights",
+          "src_server_compiler.ts:graphcompiler.checkcacheversion",
+          "src_server_compiler.ts:graphcompiler.loadpersistedcommunities",
+          "src_server_compiler.ts:graphcompiler.savepersistedcommunities",
+          "src_server_compiler.ts:graphcompiler.enqueue",
+          "src_server_compiler.ts:graphcompiler.compileanddiff",
+          "src_server_compiler.ts:graphcompiler.compile",
+          "src_server_compiler.ts:graphcompiler.compileinternal",
+          "src_server_compiler.ts:graphcompiler.evictbyindex",
+          "src_server_compiler.ts:graphcompiler.parsefile",
+          "src_server_compiler.ts:graphcompiler.updateexportscacheasync",
+          "src_server_compiler.ts:graphcompiler.resolveimports",
+          "src_server_compiler.ts:graphcompiler.findfilenodeid",
+          "src_server_compiler.ts:graphcompiler.resolvebindingtonode",
+          "src_server_compiler.ts:graphcompiler.resolvecallgraph",
+          "src_server_compiler.ts:graphcompiler.loadcognitiveinsights",
+          "src_server_compiler.ts:graphcompiler.clearderiveddocumentconcepts",
+          "src_server_compiler.ts:graphcompiler.derivedocumentconcepts",
+          "src_server_compiler.ts:graphcompiler.edgealreadyexists",
+          "src_server_compiler.ts:graphcompiler.validatechunksources",
+          "src_server_compiler.ts:graphcompiler.schedulenext",
+          "src_server_compiler.ts:graphcompiler.reconciliationscan",
+          "src_server_compiler.ts:graphcompiler.findsourcefiles",
+          "src_server_compiler.ts:graphcompiler.walk",
+          "src_server_compiler.ts:graphcompiler.saveversion",
+          "src_server_compiler.ts:graphcompiler.getnodes",
+          "src_server_compiler.ts:graphcompiler.getedges",
+          "src_server_compiler.ts:graphcompiler.gethubnodes",
+          "src_server_compiler.ts:graphcompiler.getarchitecturerules",
+          "src_server_compiler.ts:graphcompiler.getcommunities",
+          "src_server_compiler.ts:graphcompiler.getdefaultexports",
+          "src_server_compiler.ts:graphcompiler.getfilebindings",
+          "src_server_compiler.ts:graphcompiler.getmoduleresolver",
+          "src_server_compiler.ts:graphcompiler.getrawimports",
+          "src_server_compiler.ts:graphcompiler.getfileexportscache",
+          "src_server_cycles.ts",
+          "src_server_cycles.ts:detectcycleedges",
+          "concept_canvas_vs_svg",
+          "concept_deterministic_community_stability",
+          "concept_live_agent_tracking",
+          "doc_docs_reposcape_vs_graphify_md_abef9393"
+        ],
+        "showPhysical": true,
+        "showCognitive": true,
+        "showSuspicious": false
+      },
+      {
+        "say": "Finally, the agent skill in SKILL.md queries this unified topology in token-budgeted neighborhood slices, giving agents precise grounding and saving ninety percent of prompt tokens.",
+        "lang": "en-US",
+        "nodes": [
+          "src_server_daemon.ts",
+          "src_server_daemon.ts:launchhud",
+          "src_server_daemon.ts:isportinuse",
+          "src_server_daemon.ts:done",
+          "src_server_daemon.ts:measureprojectsize",
+          "src_server_daemon.ts:gettopsubdirs",
+          "src_server_daemon.ts:promptinput",
+          "src_server_daemon.ts:projectsizeguard",
+          "src_server_daemon.ts:main",
+          "concept_skill_at_repo_root",
+          "concept_bootstrap_removal",
+          "concept_dist_hygiene",
+          "concept_skill_app_separation",
+          "concept_v4_self_contradiction",
+          "doc_docs_update_spec_v4_md_3495dd73",
+          "doc_docs_update_spec_v5_md_a324ebe5"
+        ],
+        "showPhysical": true,
+        "showCognitive": true,
+        "showSuspicious": false
+      }
+    ],
+    "id": "tour-3-cognitive-graph",
+    "timestamp": 1780345000001
+  }
+]
