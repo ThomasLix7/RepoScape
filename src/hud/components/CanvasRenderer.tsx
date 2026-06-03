@@ -996,12 +996,13 @@ export class CanvasRenderer {
         ctx.stroke();
       }
 
-      const labelByFocus = focusActive && tier >= 1;
+      const isHoveredOrSelected = this.hoveredNode?.id === node.id || node.id === this.selectedNodeId;
+      const labelByFocus = focusActive && focusedIds.size <= 5 && tier >= 1;
       const isProminent = isHub || size >= 9;
       const area = w * h;
       const baseArea = 1200 * 800;
       const prominentLabelZoom = 0.45 * Math.min(1, baseArea / area);
-      if (labelByFocus || zoom >= 1.4 || (zoom >= prominentLabelZoom && isProminent)) {
+      if (isHoveredOrSelected || labelByFocus || zoom >= 1.4 || (zoom >= prominentLabelZoom && isProminent)) {
         const label = node.label || node.id;
         const { img, w: lw, h: lh } = this.getLabelImage(label);
         const targetPx = Math.max(9, 11 / Math.max(0.5, zoom));
