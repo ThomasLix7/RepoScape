@@ -6,7 +6,7 @@
     "reposcape": "./dist/server/daemon.js"
   },
   "scripts": {
-    "build:hud": "vite build",
+    "build:hud": "vite build && cp dist/hud/hud.html dist/hud/index.html",
     "build:server": "tsc",
     "build": "npm run build:hud && npm run build:server",
     "dev:server": "REPOSCAPE_PORT=5174 tsx watch src/server/daemon.ts",
